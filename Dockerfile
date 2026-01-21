@@ -1,12 +1,12 @@
 FROM python:3.11.4
 
-WORKDIR /code
+WORKDIR /
 
-COPY ./app /code/app
-COPY .env ./.env
-COPY ./requirements.txt ./code/requirements.txt
+COPY requirements.txt /
 
-RUN pip install --no-cache-dir --upgrade -r ./code/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . /
 
 EXPOSE 80
 
