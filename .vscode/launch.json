@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug HD AI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+            "args": [
+                "app.main:app",
+                "--reload",
+                "--port",
+                "3003"
+            ],
+      "jinja": true,
+      "env": {
+        "DYLD_LIBRARY_PATH": "/opt/homebrew/lib",
+        "DYLD_FALLBACK_LIBRARY_PATH": "/opt/homebrew/lib",
+        "PKG_CONFIG_PATH": "/opt/homebrew/lib/pkgconfig"
+      }
+    }
+  ]
+}

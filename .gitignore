@@ -1,0 +1,22 @@
+# Ignore Python cache files
+*__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.DS_Store
+
+# Ignore environment files
+.env
+.venv
+cmd.txt
+data.py
+prep_data.py
+upload_meta/*
+dev.Crawler.json
+location_slug.json
+metadata_only.json
+pageUrl.json
+primary_industry_slug.json
+region_slug.json
+secondary_industry_slug.json
+topic_slug.json
