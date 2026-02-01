@@ -73,7 +73,7 @@ class AzureBlobUploader:
 
         mime_type, _ = mimetypes.guess_type(file_path)
         if mime_type is None:
-            mime_type = 'application/octet-stream'  # Fallback
+            mime_type = 'application/octet-stream'  
 
         content_settings = ContentSettings(content_type=mime_type)
 
@@ -86,36 +86,70 @@ class AzureBlobUploader:
             print(f"Failed to upload {file_path} to Azure Blob Storage. Error: {str(e)}")
             return None
         
-    def upload_file_to_azure_blob_v2(self, file_path, container_name='documents', folder_name=None, file_type=".png"):
-        container_name=self.__container_name
-        container_client = self.__blob_service_client.get_container_client(container_name)
+        
+    def clear_folder(self, operator_id: str, folder_name: str):
+        """
+        Delete all blobs under a folder for a specific operator.
+        operator_id: e.g., '12345'
+        folder_name: e.g., 'Airbnb/listingId'
+        """
+        full_prefix = f"{operator_id}/{folder_name}".rstrip("/") + "/"
+        blobs_to_delete = self.__container_client.list_blobs(name_starts_with=full_prefix)
+        
+        deleted_any = False
+        for blob in blobs_to_delete:
+            blob_client = self.__container_client.get_blob_client(blob)
+            blob_client.delete_blob()
+            deleted_any = True
+        print(f"Deleted  blobs from {full_prefix}")
 
-        file_extension = os.path.splitext(file_path)[1]
+        return deleted_any  # True if something was deleted
 
-        random_filename = self.__generate_random_hex_string()
-        sanitized_filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', random_filename + file_extension)
-
+    def upload_file_to_operator_folder(self, file_path: str, operator_id: str, folder_name: str = None, file_type=".png"):
+        """
+        Uploads a file after clearing existing operator folder if present.
+        """
         if folder_name:
-            folder_name = re.sub(r'[^a-zA-Z0-9/_-]', '_', folder_name)
-            destination_blob_name = f"{folder_name}/{sanitized_filename}"
+            self.clear_folder(operator_id, folder_name)
+            full_folder_path = f"{operator_id}/{folder_name}"
         else:
-            destination_blob_name = sanitized_filename
+            full_folder_path = operator_id
+
+        return self.upload_file_to_azure_blob(file_path, folder_name=full_folder_path, file_type=file_type)
+    
+    def upload_excel_file_to_azure_blob(self, file_path, folder_name=None, file_name=None, file_type=".png"):
+            container_name=self.__container_name
+            container_client = self.__blob_service_client.get_container_client(container_name)
+
+            file_extension = os.path.splitext(file_path)[1]
+
+            if not file_name:
+                random_filename = self.__generate_random_hex_string()
+            random_filename=file_name
+            sanitized_filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', random_filename + file_extension)
+
+            if folder_name:
+                folder_name = re.sub(r'[^a-zA-Z0-9/_-]', '_', folder_name)
+                destination_blob_name = f"{folder_name}/{sanitized_filename}"
+            else:
+                destination_blob_name = sanitized_filename
+                
+            destination_blob_name = urllib.parse.quote(destination_blob_name, safe="/")
+
+            blob_client = self.__blob_service_client.get_blob_client(container_name, destination_blob_name)
+
+            mime_type, _ = mimetypes.guess_type(file_path)
+            if mime_type is None:
+                mime_type = 'application/octet-stream'  
+
+            content_settings = ContentSettings(content_type=mime_type)
+
+            try:
+                with open(file_path, "rb") as data:
+                    blob_client.upload_blob(data, overwrite=True, content_settings=content_settings)
+                uploaded_blob_url = f"https://{self.__blob_service_client.account_name}.blob.core.windows.net/{container_name}/{destination_blob_name}"
+                return uploaded_blob_url
+            except Exception as e:
+                print(f"Failed to upload {file_path} to Azure Blob Storage. Error: {str(e)}")
+                return None
             
-        destination_blob_name = urllib.parse.quote(destination_blob_name, safe="/")
-
-        blob_client = self.__blob_service_client.get_blob_client(container_name, destination_blob_name)
-
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if mime_type is None:
-            mime_type = 'application/octet-stream'  # Fallback
-
-        content_settings = ContentSettings(content_type=mime_type)
-
-        try:
-            with open(file_path, "rb") as data:
-                blob_client.upload_blob(data, overwrite=True, content_settings=content_settings)
-            uploaded_blob_url = f"https://{self.__blob_service_client.account_name}.blob.core.windows.net/{container_name}/{destination_blob_name}"
-            return uploaded_blob_url
-        except Exception as e:
-            print(f"Failed to upload {file_path} to Azure Blob Storage. Error: {str(e)}")
-            return None

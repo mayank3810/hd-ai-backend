@@ -18,84 +18,109 @@ class AuthService:
         self.uploader = AzureBlobUploader()
             
     async def get_user(self, email, password):
+        """
+        Authenticate user and return JWT token
+        """
         try:
-            user = await self.user_model.get_user({"email": email })
+            # Get user by email
+            user = await self.user_model.get_user({"email": email})
             if not user:
                 return {
                     "success": False,
                     "data": None,
-                    "error":'User does not exist'
+                    "error": "User does not exist"
                 }
-            password_match = Utils.verify_password(password,user.password)
-            if(not password_match):
+
+            # Verify password
+            password_match = Utils.verify_password(password, user.password)
+            if not password_match:
                 return {
                     "success": False,
                     "data": None,
-                    "error":'Invalid email or password'
+                    "error": "Invalid email or password"
                 }
-            if not user.isApproved:
-                return {
-                    "success": False,
-                    "data": None,
-                    "error": "Your account is not approved yet. Please try again later."
-                }
-            token = Utils.create_jwt_token(user.dict())
+
+            # Create user response data
+            user_dict = user.dict()
+            user_dict.pop("password", None)  # Remove password from response
+            
+            # Create JWT token
+            token = Utils.create_jwt_token(user_dict)
+            
             return {
-                    "success": True,
-                    "data": token
+                "success": True,
+                "data": {
+                    "token": token
                 }
+            }
         except ValidationError as e:
             error_details = e.errors()
-            raise ValueError(f"Invalid data: {error_details}")
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Validation error: {error_details}"
+            }
         except Exception as e:
             return {
                 "success": False,
                 "data": None,
-                "error":str(e)
+                "error": str(e)
             }
     
     async def signup(self, user_data) -> dict:
         """
-        This function handles the signup process.
-        It checks if the user already exists, hashes the password, and stores the user in the database.
+        Handle the signup process with enhanced validation and response.
+        - Checks if user exists
+        - Validates and sanitizes input data
+        - Hashes password
+        - Creates user record
+        - Returns user data with JWT token
         """
         try:
+            # Check if user exists
             existing_user = await self.user_model.get_user({"email": user_data.email})
             if existing_user:
                 return {
-                "success": False,
-                "data": None,
-                "error": "User Already Exists."
+                    "success": False,
+                    "data": None,
+                    "error": "User Already Exists."
                 }
-                
-            default_plan_id = os.getenv('DEFAULT_PLAN_ID')    
-            
-            hashed_password = Utils.hash_password(user_data.password)
+
+            # Prepare user data
             user_data_dict = user_data.dict()
-            user_data_dict["password"] = hashed_password
-            user_data_dict["createdOn"] = datetime.utcnow()
-            user_data_dict["PlanId"] = default_plan_id
-            # for pilot program onboarding step be 0,otherwise it will be default -1, 
-            # Remove this after pilot program is over
-            user_data_dict["onboardingStep"] = 0
             
+            # Hash password
+            hashed_password = Utils.hash_password(user_data.password)
+            user_data_dict["password"] = hashed_password
+            
+            # Set timestamps
+            current_time = datetime.utcnow()
+            user_data_dict["createdOn"] = current_time
+            user_data_dict["updatedOn"] = current_time
+            
+            # Create user
             user_id = await self.user_model.create_user(user_data_dict)
             
-            # Removed Generate JWT token for the user Pilot Program
-            # user = await self.user_model.get_user({"_id": user_id})
-            # token = Utils.create_jwt_token(user.dict())
-            # response = {
-            #     "success": True,
-            #     "data": token
-            # }
+            # Prepare response data
+            user_data_dict["_id"] = str(user_id)
+            user_data_dict.pop("password", None)  # Remove password from response
             
-            response = {
+            # Generate JWT token
+            # token = Utils.create_jwt_token(user_data_dict)
+            
+            return {
                 "success": True,
-                "data": "User Created Successfully." 
+                "data": {
+                    "user_id": user_data_dict["_id"]
+                }
             }
-
-            return response
         
+        except ValidationError as e:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Validation error: {str(e)}"
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -104,56 +129,109 @@ class AuthService:
             }
 
     async def send_otp_email(self, email: str):
+        """
+        Send OTP email for password reset with enhanced validation
+        """
         try:
+            # Validate user exists
             user = await self.user_model.get_user({"email": email})
             if not user:
                 return {"success": False, "data": None, "error": "User not found."}
-            From=os.getenv('FROM_EMAIL_ID')
-            otp = random.randint(100000,999999)
+
+            # Generate and save OTP
+            otp = random.randint(100000, 999999)
             await self.otp_model.save_otp(email, otp)
-            postmark = PostmarkClient(os.getenv('POSTMARK-SERVER-API-TOKEN')) 
+
+            # Get environment variables
+            from_email = os.getenv('FROM_EMAIL_ID')
+            postmark_token = os.getenv('POSTMARK-SERVER-API-TOKEN')
+
+            if not from_email or not postmark_token:
+                raise ValueError("Missing required environment variables")
+
+            # Send email
+            postmark = PostmarkClient(postmark_token)
             response = postmark.emails.send_with_template(
-                From=From,
+                From=from_email,
                 To=email,
-                TemplateId=42732046,
-                TemplateModel={"otp_code": otp})
-            return {"data":"Email sent", "success":True}
+                TemplateId=41238531,  
+                TemplateModel={
+                    "otp_code": otp
+                }
+            )
+
+            return {
+                "success": True,
+                "data": "Password reset instructions sent to your email",
+                "meta": {
+                    "email": email,
+                    "expires_in": "10 minutes"
+                }
+            }
+        except ValueError as ve:
+            return {"success": False, "data": None, "error": str(ve)}
         except Exception as e:
-            return {"success": False, "data": None,"error": str(e)}
-        
-    async def verify_otp_reset_password(self, email: str, input_otp: int, new_password: str):
-        """Verify OTP and update the user's password"""
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def verify_otp_reset_password(self, email: str, input_otp: str, new_password: str):
+        """
+        Verify OTP and update user's password with enhanced validation
+        """
         try:
+            # Validate user exists
+            user = await self.user_model.get_user({"email": email})
+            if not user:
+                return {"success": False, "data": None, "error": "User not found."}
+
+            # Get OTP record
             otp_record = await self.otp_model.get_otp(email)
             if not otp_record:
                 return {
-                        "success": False,
-                        "data": None,
-                        "error": "OTP not found."
-                    }
+                    "success": False,
+                    "data": None,
+                    "error": "OTP not found."
+                }
+
+            # Validate OTP expiry
             stored_otp = otp_record["otp"]
             created_at = otp_record["createdAt"]
             if datetime.utcnow() - created_at > timedelta(minutes=10):
+                # Delete expired OTP
+                await self.otp_model.delete_otp(email)
                 return {
-                        "success": False,
-                        "data": None,
-                        "error": "OTP Expired. Request a new OTP."
-                    }
+                    "success": False,
+                    "data": None,
+                    "error": "OTP Expired. Request a new OTP."
+                }
+
+            # Validate OTP
             if str(stored_otp) != input_otp:
                 return {
-                        "success": False,
-                        "data": None,
-                        "error": "Invalid OTP."
-                    }
-            new_hashed_password= Utils.hash_password(new_password)
+                    "success": False,
+                    "data": None,
+                    "error": "Invalid OTP."
+                }
+
+            # Update password
+            new_hashed_password = Utils.hash_password(new_password)
             await self.user_model.update_password(email, new_hashed_password)
+
+            # Delete used OTP
             await self.otp_model.delete_otp(email)
-            return  {
-                        "success": True,
-                        "data": "Password Updated Successfully."
-                    }
+
+            # Generate new token for automatic login
+            user_dict = user.dict()
+            user_dict["password"] = new_hashed_password
+            token = Utils.create_jwt_token(user_dict)
+
+            return {
+                "success": True,
+                "data": {
+                    "message": "Password Updated Successfully"
+                }
+            }
         except Exception as e:
-            return {"success": False, "data": None,"error": str(e)}
+            return {"success": False, "data": None, "error": str(e)}
     
     def upload_profile_picture(self, file: UploadFile):
         try:
@@ -165,15 +243,17 @@ class AuthService:
         
     async def get_all_users(self, page: int = 1, limit: int = 10):
         try:
+            import asyncio
             filters = {}
-            limit = limit
-            total = await self.user_model.get_documents_count(filters)
-
-            total_pages = (total + limit - 1) // limit
             number_to_skip = (page - 1) * limit
-            # Sort by createdOn in descending order (latest first)
-            sort = [("createdOn", -1)]
-            users = await self.user_model.get_users(filters, number_to_skip, limit, sort)
+            
+            # Run queries in parallel for better performance
+            total, users = await asyncio.gather(
+                self.user_model.get_documents_count(filters),
+                self.user_model.get_users(filters, number_to_skip, limit)
+            )
+            total_pages = (total + limit - 1) // limit
+            
             # Remove password from user dicts
             users_data = []
             for user in users:
@@ -221,53 +301,207 @@ class AuthService:
             return {"success": True, "data": "User info updated successfully."}
         except Exception as e:
             return {"success": False, "data": None, "error": str(e)}
-    
-    async def get_user_by_id(self, user_id: str):
+
+    async def get_user_by_id(self, user_id: str, admin_id: str) -> dict:
+        """
+        Get a specific user by user_id.
+        Verifies the user was created by the requesting admin.
+        """
         try:
+            # Get user by ID
             user = await self.user_model.get_user({"_id": ObjectId(user_id)})
             if not user:
-                return {"success": False, "data": None, "error": "User not found."}
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found"
+                }
             
-            # Remove password from user dict
+            # Verify the user was created by this admin
+            if user.adminId != admin_id:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "You don't have permission to view this user"
+                }
+            
+            # Remove password from response
             user_dict = user.dict()
             user_dict.pop('password', None)
             
-            return {"success": True, "data": user_dict}
+            return {
+                "success": True,
+                "data": {"user": user_dict}
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "data": None,
+                "error": str(e)
+            }
+
+    async def update_user_profile(self, user_id: str, update_data: dict) -> dict:
+        """
+        Update a user profile.
+        Can be called by both admin and user.
+        User can update their own profile, admin can update any user.
+        """
+        try:
+            if not update_data:
+                return {"success": False, "data": None, "error": "No data provided for update."}
+            
+            # Get user by ID
+            user = await self.user_model.get_user({"_id": ObjectId(user_id)})
+            if not user:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found"
+                }
+            
+            # Don't allow updating certain protected fields
+            protected_fields = ["password", "userType", "adminId", "createdOn", "_id"]
+            for field in protected_fields:
+                update_data.pop(field, None)
+            
+            if not update_data:
+                return {"success": False, "data": None, "error": "No valid fields to update"}
+            
+            # Add updatedOn timestamp
+            update_data["updatedOn"] = datetime.utcnow()
+            
+            # Update user
+            updated = await self.user_model.update_user(user_id, update_data)
+            if not updated:
+                return {"success": True, "data": "No new changes in data."}
+            
+            # Get updated user
+            updated_user = await self.user_model.get_user({"_id": ObjectId(user_id)})
+            user_dict = updated_user.dict()
+            user_dict.pop('password', None)
+            
+            return {
+                "success": True,
+                "data": {
+                    "user": user_dict,
+                    "message": "User updated successfully"
+                }
+            }
         except Exception as e:
             return {"success": False, "data": None, "error": str(e)}
-    
-    async def approve_user(self, user_id: str, is_approved: bool) -> dict:
+
+    async def get_users_by_admin(self, admin_id: str, page: int = 1, limit: int = 10) -> dict:
         """
-        Update user approval status based on the provided isApproved value.
+        Get all users created by a specific admin with pagination.
+        """
+        try:
+            import asyncio
+            filters = {"adminId": admin_id}
+            number_to_skip = (page - 1) * limit
+            
+            # Run queries in parallel for better performance
+            total, users = await asyncio.gather(
+                self.user_model.get_documents_count(filters),
+                self.user_model.get_users(filters, number_to_skip, limit)
+            )
+            total_pages = (total + limit - 1) // limit
+            
+            # Remove password from user dicts
+            users_data = []
+            for user in users:
+                user_dict = user.dict()
+                user_dict.pop('password', None)
+                users_data.append(user_dict)
+                
+            return {
+                "success": True,
+                "data": {
+                    "users": users_data,
+                    "pagination": {
+                        "total": total,
+                        "totalPages": total_pages,
+                        "currentPage": page,
+                        "limit": limit
+                    }
+                }
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "data": None,
+                "error": str(e)
+            }
+
+    async def create_user_by_admin(self, user_data, admin_id: str) -> dict:
+        """
+        Create a new user by admin with admin ID tracking.
+        - Checks if user exists
+        - Validates and sanitizes input data
+        - Hashes password
+        - Sets userType to USER
+        - Saves admin ID who created the user
+        - Creates user record
         """
         try:
             # Check if user exists
-            user = await self.user_model.get_user({"_id": ObjectId(user_id)})
-            if not user:
-                return {"success": False, "data": None, "error": "User not found."}
+            existing_user = await self.user_model.get_user({"email": user_data.email})
+            if existing_user:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User with this email already exists."
+                }
+
+            # Prepare user data
+            user_data_dict = user_data.dict()
             
-            # Update user approval status
-            updated = await self.user_model.update_user(user_id, {"isApproved": is_approved})
-            if not updated:
-                return {"success": False, "data": None, "error": "Failed to update user approval status."}
+            # Hash password
+            hashed_password = Utils.hash_password(user_data.password)
+            user_data_dict["password"] = hashed_password
             
-            # Send approval email if user is approved
-            if is_approved and user.email:
-                try:
-                    From = os.getenv('FROM_EMAIL_ID')
-                    postmark = PostmarkClient(os.getenv('POSTMARK-SERVER-API-TOKEN'))
-                    postmark.emails.send_with_template(
-                        From=From,
-                        To=user.email,
-                        TemplateId=42732065,
-                        TemplateModel={"name": user.fullName,"app_name":"SOURCE HR","login_url":"https://kind-cliff-0e3c6e210.6.azurestaticapps.net/signin"}
-                    )
-                except Exception as email_error:
-                    # Log email error but don't fail the approval process
-                    print(f"Failed to send approval email: {str(email_error)}")
+            # Set user type to USER (cannot create admin via this endpoint)
+            user_data_dict["userType"] = "user"
             
-            action = "approved" if is_approved else "disapproved"
-            return {"success": True, "data": f"User {action} successfully."}
+            # Set the admin ID who created this user
+            user_data_dict["adminId"] = admin_id
+            
+            # Set timestamps
+            current_time = datetime.utcnow()
+            user_data_dict["createdOn"] = current_time
+            user_data_dict["updatedOn"] = current_time
+            
+            # Create user
+            user_id = await self.user_model.create_user(user_data_dict)
+            
+            # Prepare response data
+            response_data = {
+                "_id": str(user_id),
+                "email": user_data_dict["email"],
+                "fullName": user_data_dict["fullName"],
+                "phone": user_data_dict.get("phone"),
+                "userType": user_data_dict["userType"],
+                "adminId": admin_id,
+                "createdOn": current_time
+            }
+            
+            return {
+                "success": True,
+                "data": {
+                    "user": response_data,
+                    "message": "User created successfully"
+                }
+            }
+        
+        except ValidationError as e:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Validation error: {str(e)}"
+            }
         except Exception as e:
-            return {"success": False, "data": None, "error": str(e)}
+            return {
+                "success": False,
+                "data": None,
+                "error": str(e)
+            }
         

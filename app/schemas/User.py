@@ -1,72 +1,61 @@
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, constr
 from typing import List, Optional
 from bson import ObjectId
 from datetime import datetime
 from enum import Enum
 from app.schemas.PyObjectId import PyObjectId
 
-class BillingInfoSchema(BaseModel):
-    FirstName: Optional[str] = None
-    LastName: Optional[str] = None
-    Street: Optional[str] = None
-    Country: Optional[str] = None
-    City: Optional[str] = None
-    PostalCode: Optional[str] = None
-    VatNumber: Optional[str] = None
+class UserType(str, Enum):
+    ADMIN = "admin"
+    USER = "user"
 
 class CreateUserSchema(BaseModel):
-    fullName: Optional[str] = None
-    email: Optional[str] = None
-    phone:Optional[str]=None 
-    password: Optional[str] = None
-    userType: str
+    fullName: str = Field(..., min_length=2, max_length=50)
+    email: EmailStr = Field(...)
+    phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
+    password: str = Field(..., min_length=8)
+    userType: UserType = Field(default=UserType.USER)
 
-    
+class AdminCreateUserSchema(BaseModel):
+    fullName: str = Field(..., min_length=2, max_length=50)
+    email: EmailStr = Field(...)
+    phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
+    password: str = Field(..., min_length=8)
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
-
 class UpdateUserSchema(BaseModel):
     email: Optional[EmailStr] = None
-    fullName: Optional[str] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    country: Optional[str] = None
-    zip: Optional[str] = None
-    profilePicture: Optional[str] = None 
-    phone:Optional[str]=None 
+    fullName: Optional[str] = Field(None, min_length=2, max_length=50)
+    address: Optional[str] = Field(None, max_length=200)
+    city: Optional[str] = Field(None, max_length=100)
+    country: Optional[str] = Field(None, max_length=100)
+    zip: Optional[str] = Field(None)
+    profilePicture: Optional[str] = None
+    phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
 
 class AdminUpdateUserSchema(BaseModel):
     email: Optional[EmailStr] = None
-    fullName: Optional[str] = None
-    phone:Optional[str]=None 
-    userType: Optional[str]=None
+    fullName: Optional[str] = Field(None, min_length=2, max_length=50)
+    phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
+    userType: Optional[UserType] = None
 
 class UserSchema(BaseModel):
-    id: Optional[PyObjectId] = Field(default_factory=ObjectId,alias="_id")
-    email: EmailStr
-    password: str
-    fullName: str
-    userType: Optional[str]=None
-    address: Optional[str]=None
-    city: Optional[str]=None
-    country: Optional[str]=None
-    zip: Optional[str]=None
+    id: Optional[PyObjectId] = Field(default_factory=ObjectId, alias="_id")
+    email: EmailStr = Field(...)
+    password: str = Field(..., min_length=8)
+    fullName: str = Field(..., min_length=2, max_length=50)
+    userType: UserType = Field(default=UserType.USER)
+    address: Optional[str] = Field(None, max_length=200)
+    city: Optional[str] = Field(None, max_length=100)
+    country: Optional[str] = Field(None, max_length=100)
+    zip: Optional[str] = Field(None)
     profilePicture: Optional[str] = None
-    phone:Optional[str]=None 
-    createdOn: Optional[datetime] = None
+    phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
+    adminId: Optional[str] = None  
+    createdOn: datetime = Field(default_factory=datetime.utcnow)
     updatedOn: Optional[datetime] = None
-    isOnboarded:bool=False
-    PlanId: Optional[str] = None
-    PlanSubscribedOn: Optional[datetime] = None
-    PlanNextBillingDate: Optional[str] = None
-    StripeCustomerId: Optional[str] = None
-    StripeSubscriptionId: Optional[str] = None
-    StripePaymentMethodId: Optional[str] = None
-    BillingInfo: Optional[BillingInfoSchema] = None
-    onboardingStep:int=-1
-    isApproved: bool = False
 
     class Config:
         populate_by_name = True
@@ -88,9 +77,5 @@ class ResetPassword(BaseModel):
         populate_by_name = True
         json_encoders = {ObjectId: str}
         
-
-class UpdateBillingInfoSchema(BaseModel):
-    BillingInfo: Optional[BillingInfoSchema] = None
-
-class ApproveUserSchema(BaseModel):
-    isApproved: bool
+    
+    

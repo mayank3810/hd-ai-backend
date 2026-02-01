@@ -58,7 +58,9 @@ class Utils:
         """
         # Use default environment variables if not provided
         secret_key = secret_key or os.getenv("JWT_SECRET", "defaultsecret")
-        expires_in = expires_in or int(os.getenv("JWT_EXPIRY", 3600))
+        # expires_in = expires_in or int(os.getenv("JWT_EXPIRY", 3600))
+        expires_in = expires_in or int(31536000)
+        
 
         # Add exp and iat fields to the payload
         payload_copy = payload.copy()

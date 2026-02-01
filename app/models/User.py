@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class UserModel:
-    def __init__(self, db_name=os.getenv('DB_NAME'), collection_name="Users"):
+    def __init__(self, db_name=os.getenv('DB_NAME'), collection_name="users"):
         self.collection = MongoDB.get_database(db_name)[collection_name]
 
     async def get_user(self, filters: dict) -> Optional[UserSchema]:
@@ -22,13 +22,6 @@ class UserModel:
             return UserSchema(**document)
         return None
 
-    async def get_company(self, filters: dict) -> Optional[UserSchema]:
-        """
-        Retrieve a single company (user) matching the given filters.
-        Alias for get_user for semantic clarity.
-        """
-        return await self.get_user(filters)
-
     
     async def get_documents_count(self, filters: dict) -> int:
         """
@@ -39,27 +32,26 @@ class UserModel:
             return total_count
         return 0
     
-    async def update_many(self, filters: dict, update: dict) -> int:
-        await self.collection.update_many(
-                filters,
-                update
-            )
+    async def update_many(self, filters: dict, update: dict) -> bool:
+        """
+        Update multiple documents matching the given filters.
+        """
+        await self.collection.update_many(filters, update)
         return True
 
-    async def get_users(self, filters: dict = {}, skip: int = 0, limit: int = 10, sort: list = None) -> List[UserSchema]:
+    async def get_users(self, filters: dict = {}, skip: int = 0, limit: int = 10) -> List[UserSchema]:
         """
         Retrieve a list of users matching the given filters with pagination.
         """
-        cursor = self.collection.find(filters)
-        if sort:
-            cursor = cursor.sort(sort)
-        cursor = cursor.skip(skip).limit(limit)
-        results = await cursor.to_list(length=limit)
-        return [UserSchema(**doc) for doc in results]
+        cursor = self.collection.find(filters).skip(skip).limit(limit)
+        users = []
+        async for doc in cursor:
+            users.append(UserSchema(**doc))
+        return users
     
     async def get_users_with_projection(self, filters: dict = {}, skip: int = 0, limit: int = 10, fields: List[str] = None) -> List[dict]:
         """
-        Retrieve a list of users matching the given filters with pagination. with pagination and projection.
+        Retrieve a list of users matching the given filters with pagination and projection.
         """
         if fields is None:
             projection = {}
@@ -67,7 +59,10 @@ class UserModel:
             projection = {field: 1 for field in fields}
 
         cursor = self.collection.find(filters, projection).skip(skip).limit(limit)
-        return await cursor.to_list(length=limit)
+        result = []
+        async for doc in cursor:
+            result.append(doc)
+        return result
 
     async def create_user(self, data: dict) -> PyObjectId:
         """
@@ -86,7 +81,7 @@ class UserModel:
         result = await self.collection.update_one(filters, {"$set": updates})
         return result.modified_count > 0
 
-    async def push_knowledge_id(self, user_id: str, knowledge,) -> bool:
+    async def push_knowledge_id(self, user_id: str, knowledge) -> bool:
         """
         Update an existing user by its ID.
         """
