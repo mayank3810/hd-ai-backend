@@ -31,6 +31,7 @@ _onboarding_status_service = None
 _queue_status_service = None
 _analytics_cues_preset_service = None
 _excel_schedule_service = None
+_speaker_profile_model = None
 
 
 def get_auth_service():
@@ -261,6 +262,15 @@ def get_excel_schedule_service():
     return _excel_schedule_service
 
 
+def get_speaker_profile_model():
+    """Get singleton SpeakerProfileModel instance"""
+    global _speaker_profile_model
+    if _speaker_profile_model is None:
+        from app.models.SpeakerProfile import SpeakerProfileModel
+        _speaker_profile_model = SpeakerProfileModel()
+    return _speaker_profile_model
+
+
 def cleanup_resources():
     """
     Cleanup all singleton resources. Call this on application shutdown.
@@ -272,8 +282,8 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service
-    
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model
+
     # Reset all services
     _auth_service = None
     _property_service = None
@@ -301,3 +311,4 @@ def cleanup_resources():
     _queue_status_service = None
     _analytics_cues_preset_service = None
     _excel_schedule_service = None
+    _speaker_profile_model = None
