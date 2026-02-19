@@ -25,6 +25,7 @@ class VerifyStepRequest(BaseModel):
     source: Literal["selection", "text"] = Field(..., description="'selection' or 'text'")
     retry_count: int = Field(0, ge=0, description="How many times user has retried this step")
     profile_id: Optional[str] = Field(None, description="Set after first valid step (full_name); required for subsequent steps")
+    user_id: Optional[str] = Field(None, description="Logged-in user id; when present, linked to profile on create (full_name step)")
 
 
 # --- POST /verify-step response (chat-style) ---

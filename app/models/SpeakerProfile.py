@@ -86,6 +86,26 @@ class SpeakerProfileModel:
             doc["_id"] = str(doc["_id"])
         return doc
 
+    async def get_profile_by_id_and_user(self, profile_id: str, user_id: str) -> Optional[dict]:
+        """Return profile document by id and user_id, or None if not found."""
+        try:
+            oid = ObjectId(profile_id)
+        except Exception:
+            return None
+        doc = await self.collection.find_one({"_id": oid, "user_id": user_id})
+        if doc and "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    async def get_profiles_by_user_id(self, user_id: str) -> List[dict]:
+        """Return all speaker profiles for the given user_id, newest first."""
+        cursor = self.collection.find({"user_id": user_id}).sort("createdAt", -1)
+        docs = await cursor.to_list(length=None)
+        for doc in docs:
+            if doc and "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+        return docs
+
     async def create_speaker_profile(self, user_id: str, profile_data: dict) -> dict:
         """
         Insert a new speaker profile (full save). profile_data must include all profile fields.

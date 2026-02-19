@@ -22,9 +22,70 @@ from app.services.SpeakerProfileConversation import (
     generate_transition_message,
 )
 from app.dependencies import get_speaker_profile_model
+from app.helpers.Utilities import Utils
+from app.schemas.ServerResponse import ServerResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/speaker-profile", tags=["Speaker Profile Onboarding"])
+
+
+@router.get("", response_model=ServerResponse)
+async def get_my_speaker_profiles(
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+):
+    """
+    Get speaker profile(s) for the current user. Filtered by user_id from JWT.
+    Returns a list (newest first); empty list if none.
+    """
+    try:
+        user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
+            )
+        profiles = await model.get_profiles_by_user_id(str(user_id))
+        return Utils.create_response(profiles, True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.get("/{profile_id}", response_model=ServerResponse)
+async def get_speaker_profile_by_id(
+    profile_id: str,
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+):
+    """
+    Get a speaker profile by id. Returns the profile only if it belongs to the current user (JWT).
+    """
+    try:
+        user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
+            )
+        profile = await model.get_profile_by_id_and_user(profile_id, str(user_id))
+        if not profile:
+            raise HTTPException(
+                status_code=404,
+                detail={"data": None, "error": "Profile not found.", "success": False},
+            )
+        return Utils.create_response(profile, True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
 
 
 @router.post("/init")
@@ -44,11 +105,14 @@ def _profile_context(profile: dict) -> dict:
 
 
 @router.post("/verify-step")
-async def verify_step(body: VerifyStepRequest, model=Depends(get_speaker_profile_model)):
+async def verify_step(body: VerifyStepRequest, jwt_payload: dict = Depends(jwt_validator), model=Depends(get_speaker_profile_model)):
     """
     Validate and normalize the answer for the given step; return next step or repeat.
     Progressive save: first valid step (full_name) creates profile and returns profile_id; subsequent steps require profile_id.
     """
+    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found in token.")
     step_def = get_step_by_name(body.step)
     validation_mode = step_def.validation_mode if step_def else "unknown"
 
@@ -124,7 +188,7 @@ async def verify_step(body: VerifyStepRequest, model=Depends(get_speaker_profile
 
     profile_id = body.profile_id
     if body.step == "full_name" and not body.profile_id:
-        doc = await model.create_profile(normalized)
+        doc = await model.create_profile(normalized, user_id=user_id)
         profile_id = str(doc["_id"])
     elif body.profile_id and profile:
         completed = list(profile.get("completed_steps") or [])
