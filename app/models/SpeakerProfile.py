@@ -11,7 +11,7 @@ from app.config.speaker_profile_steps import get_next_step
 
 # Profile field names (for updates)
 PROFILE_FIELDS = [
-    "full_name", "topics", "speaking_formats", "delivery_mode", "linkedin_url",
+    "full_name", "email", "topics", "speaking_formats", "delivery_mode", "linkedin_url",
     "past_speaking_examples", "video_links", "talk_description", "key_takeaways", "target_audiences",
 ]
 

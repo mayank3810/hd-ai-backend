@@ -76,6 +76,11 @@ def _fallback_recovery(
             "That doesn't quite look like a full name. Could you share your real full name (first and last)?",
             "Please enter your full name, e.g. first and last name.",
         ]
+    elif reason_code == "INVALID_EMAIL":
+        variants = [
+            "That doesn't look like a valid email address. Could you double-check and try again?",
+            "Please enter a valid email address (e.g. name@example.com).",
+        ]
     elif reason_code in ("INVALID_URL",):
         variants = [
             "That link doesn't look quite right. Could you paste the full URL (including https://)?",
@@ -114,6 +119,52 @@ def _fallback_recovery(
         else:
             msg = f"{msg} For example: {allowed[0]}."
     return msg
+
+
+def generate_welcome_message(first_step_question: str) -> str:
+    """
+    Generate an AI welcome message for the first step (init).
+    Returns HTML-formatted message with line breaks for better spacing.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return f"Welcome to Human Driven AI.<br>I will help you to create an account and find matching speaking opportunities<br>{first_step_question}"
+    
+    client = OpenAI(api_key=api_key)
+    prompt = {
+        "first_step_question": first_step_question,
+        "requirements": [
+            "Write a short, warm welcome message (3 lines maximum).",
+            "Line 1: Welcome to Human Driven AI.",
+            "Line 2: Explain that you will help them create an account and find matching speaking opportunities.",
+            "Line 3: Ask for their name (use the first_step_question naturally).",
+            "Format: Use <br> tags for line breaks. Keep each line concise (one short sentence per line).",
+            "Vary the wording slightly each time while keeping the same structure.",
+        ],
+    }
+    
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful conversational assistant for Human Driven AI. Return ONLY the HTML-formatted message with <br> tags for line breaks. No JSON. Keep it short and concise - maximum 3 lines."},
+                {"role": "user", "content": str(prompt)},
+            ],
+            temperature=0.8,  # Higher temperature for more variation
+            timeout=10,
+        )
+        msg = (completion.choices[0].message.content or "").strip()
+        # Ensure we have <br> tags, fallback to adding them if AI didn't include them
+        if "<br>" not in msg and "\n" in msg:
+            msg = msg.replace("\n", "<br>")
+        elif "<br>" not in msg:
+            # If no line breaks, try to add them after periods (simple heuristic)
+            parts = msg.split(". ")
+            if len(parts) >= 2:
+                msg = ".<br>".join(parts)
+        return msg or f"Welcome to Human Driven AI.<br>I will help you to create an account and find matching speaking opportunities<br>{first_step_question}"
+    except Exception:
+        return f"Welcome to Human Driven AI.<br>I will help you to create an account and find matching speaking opportunities<br>{first_step_question}"
 
 
 def generate_transition_message(

@@ -85,6 +85,7 @@ class VerifyStepInvalidResponse(BaseModel):
 class SpeakerProfileCreateSchema(BaseModel):
     """Full speaker profile payload for POST /speaker-profile."""
     full_name: str = Field(..., min_length=1)
+    email: str = Field(..., min_length=1)
     topics: List[SpeakerTopicItem] = Field(..., min_length=1)  # array of topic objects from speakerTopics
     speaking_formats: List[str] = Field(...)
     delivery_mode: List[str] = Field(...)

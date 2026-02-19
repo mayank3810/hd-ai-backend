@@ -11,6 +11,7 @@ class ScraperSchema(BaseModel):
     url: str
     description: Optional[str] = None
     userId: str = Field(..., alias="user_id")
+    opportunities: list = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: Optional[datetime] = None
 
@@ -23,6 +24,7 @@ class ScraperCreateSchema(BaseModel):
     sourceName: str = Field(..., alias="sourceName")
     url: str
     description: Optional[str] = None
+    opportunities: list = Field(default_factory=list)
 
     class Config:
         populate_by_name = True
@@ -32,6 +34,7 @@ class ScraperUpdateSchema(BaseModel):
     sourceName: Optional[str] = Field(None, alias="sourceName")
     url: Optional[str] = None
     description: Optional[str] = None
+    opportunities: Optional[list] = None
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:

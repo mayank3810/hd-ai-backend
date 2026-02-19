@@ -37,9 +37,9 @@ _LINKEDIN_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# YouTube video URL: youtube.com/watch, youtu.be/, youtube.com/embed/, youtube.com/v/
+# YouTube video URL: youtube.com/watch, youtu.be/, youtube.com/embed/, youtube.com/v/, supports query params
 _YOUTUBE_URL_PATTERN = re.compile(
-    r"^https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/)|youtu\.be/)[\w\-]+",
+    r"^https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/)|youtu\.be/)[\w\-]+(?:\?[^\s]+)?$",
     re.IGNORECASE,
 )
 
@@ -81,6 +81,11 @@ def _check_gibberish(text: str) -> bool:
 # Full name: letters, spaces, hyphen, apostrophe; at least 2 words; each word >= 2 chars; no URLs
 _FULL_NAME_REGEX = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ' \-]+$")
 
+# Email: standard pattern (no AI)
+_EMAIL_REGEX = re.compile(
+    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$"
+)
+
 # Unicode space-like characters to normalize to ASCII space (e.g. from paste or mobile)
 _UNICODE_SPACES = re.compile(r"[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]+")
 
@@ -92,6 +97,16 @@ def _normalize_name_for_validation(name: str) -> str:
     name = name.strip()
     name = _UNICODE_SPACES.sub(" ", name)
     return " ".join(name.split())
+
+
+def validate_email(value: str) -> bool:
+    """Regex-only validation for email. No AI."""
+    if not value or not isinstance(value, str):
+        return False
+    s = value.strip()
+    if not s or len(s) > 254:
+        return False
+    return bool(_EMAIL_REGEX.match(s))
 
 
 def validate_full_name(name: str) -> bool:
@@ -642,6 +657,13 @@ def validate_step(
                 return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
         return {"status": "VALID", "reason_code": "OK", "normalized_value": _normalize_name_for_validation(text)}
 
+    # email_regex: regex-only validation, no AI
+    if step.validation_mode == "email_regex":
+        text = (normalized if isinstance(normalized, str) else " ".join(str(x).strip() for x in normalized if str(x).strip())).strip()
+        if not validate_email(text):
+            return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
+        return {"status": "VALID", "reason_code": "OK", "normalized_value": text.strip().lower()}
+
     # topics_multiselect: allowed values from DB (allowed_topics_for_step)
     if step.validation_mode == "topics_multiselect" and allowed_topics_for_step is not None:
         if source == "selection":
@@ -782,9 +804,13 @@ def validate_step(
 
 
 def get_init_response() -> dict:
+    from app.services.SpeakerProfileConversation import generate_welcome_message
     first = get_first_step()
     payload = step_to_response(first)
-    payload["assistant_message"] = f"Hi! Let's set up your speaker profile. {first.question}"
+    # Generate AI welcome message that includes the first step question
+    welcome_message = generate_welcome_message(first.question)
+    payload["question"] = welcome_message
+    payload["assistant_message"] = welcome_message
     return payload
 
 
@@ -807,6 +833,7 @@ def validate_full_profile(
     errors = []
     field_mapping = {
         "full_name": ("full_name", "text"),
+        "email": ("email", "text"),
         "topics": ("topics", "selection"),
         "speaking_formats": ("speaking_formats", "selection"),
         "delivery_mode": ("delivery_mode", "selection"),
