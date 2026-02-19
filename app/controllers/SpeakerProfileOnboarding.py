@@ -21,7 +21,7 @@ from app.services.SpeakerProfileConversation import (
     generate_recovery_message,
     generate_transition_message,
 )
-from app.dependencies import get_speaker_profile_model
+from app.dependencies import get_speaker_profile_model, get_speaker_topics_model, get_speaker_target_audience_model
 from app.helpers.Utilities import Utils
 from app.schemas.ServerResponse import ServerResponse
 
@@ -104,8 +104,33 @@ def _profile_context(profile: dict) -> dict:
     return {k: profile.get(k) for k in PROFILE_FIELDS if profile.get(k) is not None and profile.get(k) != [] and profile.get(k) != ""}
 
 
+async def _step_payload_with_dynamic_allowed(step_def, speaker_topics_model, speaker_target_audience_model):
+    """Build step payload; for topics/target_audiences steps, fetch and inject allowed_values from DB."""
+    payload = step_to_response(step_def) if step_def else {}
+    if step_def and step_def.step_name == "topics":
+        payload["allowed_values"] = await speaker_topics_model.get_all()
+    elif step_def and step_def.step_name == "target_audiences":
+        payload["allowed_values"] = await speaker_target_audience_model.get_all()
+    return payload
+
+
+def _allowed_values_for_recovery(step_name, step_def, allowed_topics_for_step, allowed_target_audiences_for_step):
+    """Return allowed_values for generate_recovery_message based on current step."""
+    if step_name == "topics":
+        return allowed_topics_for_step
+    if step_name == "target_audiences":
+        return allowed_target_audiences_for_step
+    return step_def.allowed_values if step_def else None
+
+
 @router.post("/verify-step")
-async def verify_step(body: VerifyStepRequest, jwt_payload: dict = Depends(jwt_validator), model=Depends(get_speaker_profile_model)):
+async def verify_step(
+    body: VerifyStepRequest,
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+    speaker_topics_model=Depends(get_speaker_topics_model),
+    speaker_target_audience_model=Depends(get_speaker_target_audience_model),
+):
     """
     Validate and normalize the answer for the given step; return next step or repeat.
     Progressive save: first valid step (full_name) creates profile and returns profile_id; subsequent steps require profile_id.
@@ -116,14 +141,22 @@ async def verify_step(body: VerifyStepRequest, jwt_payload: dict = Depends(jwt_v
     step_def = get_step_by_name(body.step)
     validation_mode = step_def.validation_mode if step_def else "unknown"
 
+    # When step is topics or target_audiences, fetch allowed values once (for validation and for repeat/next payloads)
+    allowed_topics_for_step = None
+    allowed_target_audiences_for_step = None
+    if body.step == "topics":
+        allowed_topics_for_step = await speaker_topics_model.get_all()
+    elif body.step == "target_audiences":
+        allowed_target_audiences_for_step = await speaker_target_audience_model.get_all()
+
     if body.step != "full_name" and not body.profile_id:
-        repeat_step = step_to_response(step_def) if step_def else {}
+        repeat_step = await _step_payload_with_dynamic_allowed(step_def, speaker_topics_model, speaker_target_audience_model)
         assistant_message = generate_recovery_message(
             step_name=body.step,
             user_answer=body.answer,
             reason_code="MISSING_PROFILE_ID",
             retry_count=body.retry_count or 0,
-            allowed_values=step_def.allowed_values if step_def else None,
+            allowed_values=_allowed_values_for_recovery(body.step, step_def, allowed_topics_for_step, allowed_target_audiences_for_step),
         )
         return {"assistant_message": assistant_message, "repeat_step": repeat_step}
 
@@ -141,6 +174,8 @@ async def verify_step(body: VerifyStepRequest, jwt_payload: dict = Depends(jwt_v
         source=body.source,
         expected_step_name=expected_step_name,
         profile_context=profile_context,
+        allowed_topics_for_step=allowed_topics_for_step,
+        allowed_target_audiences_for_step=allowed_target_audiences_for_step,
     )
 
     # Debug logging: verify branch logic
@@ -161,13 +196,13 @@ async def verify_step(body: VerifyStepRequest, jwt_payload: dict = Depends(jwt_v
 
     if result.get("status") != "VALID":
         logger.info("verify-step: branch=repeat")
-        repeat_step = step_to_response(step_def) if step_def else {}
+        repeat_step = await _step_payload_with_dynamic_allowed(step_def, speaker_topics_model, speaker_target_audience_model)
         assistant_message = generate_recovery_message(
             step_name=body.step,
             user_answer=body.answer,
             reason_code=result.get("reason_code") or "UNKNOWN",
             retry_count=body.retry_count or 0,
-            allowed_values=step_def.allowed_values if step_def else None,
+            allowed_values=_allowed_values_for_recovery(body.step, step_def, allowed_topics_for_step, allowed_target_audiences_for_step),
         )
         return {"assistant_message": assistant_message, "repeat_step": repeat_step}
 
@@ -176,7 +211,7 @@ async def verify_step(body: VerifyStepRequest, jwt_payload: dict = Depends(jwt_v
     next_step_def = get_next_step(body.step)
     next_step_name = next_step_def.step_name if next_step_def else None
     is_last = is_last_step(body.step)
-    next_step_payload = step_to_response(next_step_def) if next_step_def else None
+    next_step_payload = await _step_payload_with_dynamic_allowed(next_step_def, speaker_topics_model, speaker_target_audience_model) if next_step_def else None
     if is_last:
         next_step_payload = {}
     assistant_message = generate_transition_message(
@@ -216,6 +251,8 @@ async def save_speaker_profile(
     body: SpeakerProfileCreateSchema,
     jwt_payload: dict = Depends(jwt_validator),
     model=Depends(get_speaker_profile_model),
+    speaker_topics_model=Depends(get_speaker_topics_model),
+    speaker_target_audience_model=Depends(get_speaker_target_audience_model),
 ):
     """
     Save the full speaker profile after onboarding. Requires JWT.
@@ -226,8 +263,14 @@ async def save_speaker_profile(
     if not user_id:
         raise HTTPException(status_code=401, detail="User ID not found in token.")
     
+    allowed_topics = await speaker_topics_model.get_all()
+    allowed_target_audiences = await speaker_target_audience_model.get_all()
     # Re-validate entire profile (authoritative validation)
-    validation_errors = validate_full_profile(body.model_dump())
+    validation_errors = validate_full_profile(
+        body.model_dump(by_alias=True),
+        allowed_topics=allowed_topics,
+        allowed_target_audiences=allowed_target_audiences,
+    )
     if validation_errors:
         raise HTTPException(
             status_code=400,
@@ -236,6 +279,6 @@ async def save_speaker_profile(
             }
         )
     
-    profile_data = body.model_dump()
+    profile_data = body.model_dump(by_alias=True)
     doc = await model.create_speaker_profile(str(user_id), profile_data)
     return {"success": True, "id": str(doc["_id"])}

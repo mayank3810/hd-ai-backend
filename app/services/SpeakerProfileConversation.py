@@ -17,6 +17,16 @@ from openai import OpenAI
 from app.config.speaker_profile_steps import StepDefinition, get_step_by_name
 
 
+def _allowed_display(allowed: Optional[List[Any]]) -> List[str]:
+    """Convert allowed_values to list of display strings (for recovery messages). Handles list of str or list of topic objects."""
+    if not allowed:
+        return []
+    return [
+        (x.get("name") or x.get("slug") or "") if isinstance(x, dict) else str(x)
+        for x in allowed
+    ]
+
+
 def _stable_seed(*parts: str) -> int:
     h = hashlib.sha256("||".join(parts).encode("utf-8")).hexdigest()
     return int(h[:8], 16)
@@ -43,10 +53,11 @@ def _fallback_recovery(
     step: StepDefinition,
     reason_code: str,
     retry_count: int,
-    allowed_values: Optional[List[str]] = None,
+    allowed_values: Optional[List[Any]] = None,
 ) -> str:
     q = step.question
-    allowed = (allowed_values if allowed_values is not None else (step.allowed_values or []))
+    raw_allowed = allowed_values if allowed_values is not None else (step.allowed_values or [])
+    allowed = _allowed_display(raw_allowed) if raw_allowed and isinstance(raw_allowed[0], dict) else (raw_allowed if isinstance(raw_allowed, list) else [])
 
     variants = []
     if reason_code in ("EMPTY", "REQUIRED"):
@@ -73,10 +84,11 @@ def _fallback_recovery(
         ]
     elif reason_code in ("ENUM_NO_MATCH", "ENUM_INVALID"):
         if allowed:
+            display_str = ", ".join(str(a) for a in allowed)
             variants = [
-                f"I didn’t quite catch that—could you choose from: {', '.join(allowed)}?",
-                f"Which option fits best? Pick from: {', '.join(allowed)}.",
-                f"To keep things consistent, please choose from: {', '.join(allowed)}.",
+                f"I didn’t quite catch that—could you choose from: {display_str}?",
+                f"Which option fits best? Pick from: {display_str}.",
+                f"To keep things consistent, please choose from: {display_str}.",
             ]
         else:
             variants = [
@@ -98,7 +110,7 @@ def _fallback_recovery(
     # Escalate help after repeated failures: examples; for enum optionally list allowed_values
     if (retry_count or 0) > 1 and allowed:
         if reason_code in ("ENUM_NO_MATCH", "ENUM_INVALID"):
-            msg = f"{msg} Allowed options: {', '.join(allowed)}."
+            msg = f"{msg} Allowed options: {', '.join(str(a) for a in allowed)}."
         else:
             msg = f"{msg} For example: {allowed[0]}."
     return msg
@@ -180,10 +192,10 @@ def generate_transition_message(
 
 def generate_recovery_message(
     step_name: str,
-    user_answer: Union[str, List[str]],
+    user_answer: Union[str, List[str], List[dict]],
     reason_code: str,
     retry_count: int = 0,
-    allowed_values: Optional[List[str]] = None,
+    allowed_values: Optional[List[Any]] = None,
 ) -> str:
     """
     Generate a conversational recovery message after an INVALID step.

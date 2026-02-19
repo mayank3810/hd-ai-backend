@@ -127,17 +127,33 @@ def split_input_topics(text: str) -> List[str]:
 
 
 def _validate_basic(
-    step: StepDefinition, answer: Union[str, List[str]]
-) -> Tuple[Optional[Union[str, List[str]]], Optional[str]]:
+    step: StepDefinition, answer: Union[str, List[str], List[dict]]
+) -> Tuple[Optional[Union[str, List[str], List[dict]]], Optional[str]]:
     if step.required:
         if isinstance(answer, str):
             if not answer or not answer.strip():
                 return None, "This field is required."
         elif isinstance(answer, list):
-            if not answer or not any(isinstance(a, str) and a.strip() for a in answer):
+            # Allow list of strings (enum) or list of dicts (topics selection)
+            if not answer:
+                return None, "At least one value is required."
+            if step.validation_mode in ("topics_multiselect", "target_audiences_multiselect"):
+                if not any(isinstance(a, dict) and (a.get("_id") or a.get("slug") or a.get("name")) for a in answer):
+                    return None, "At least one value is required."
+            elif not any(isinstance(a, str) and a.strip() for a in answer):
                 return None, "At least one value is required."
         else:
             return None, "Invalid input type."
+
+    # topics_multiselect / target_audiences_multiselect: accept list of objects (selection) or string (text)
+    if step.validation_mode in ("topics_multiselect", "target_audiences_multiselect"):
+        if isinstance(answer, list):
+            return answer, None
+        if isinstance(answer, str):
+            if step.required and not answer.strip():
+                return None, "This field is required."
+            return answer.strip(), None
+        return None, "Invalid input type."
 
     if step.validation_type in ("string", "textarea", "url"):
         if isinstance(answer, list):
@@ -483,12 +499,124 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": one of {allow
         return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
 
 
+def _validation_ai_enum_intent_topics(
+    client: OpenAI,
+    step: StepDefinition,
+    user_text: str,
+    allowed_topics: List[dict],
+) -> Dict[str, Any]:
+    """Map free-text user input to allowed topics (by name). Returns list of full topic objects."""
+    if not allowed_topics:
+        return {"status": "INVALID", "reason_code": "ENUM_INVALID", "normalized_value": None}
+    allowed_names = [t.get("name", "").strip() for t in allowed_topics if t.get("name")]
+    name_to_topic = {t.get("name", "").strip().lower(): t for t in allowed_topics if t.get("name")}
+    if not name_to_topic:
+        return {"status": "INVALID", "reason_code": "ENUM_INVALID", "normalized_value": None}
+    allowed_reason_codes = ["EMPTY", "GIBBERISH", "SPAM", "UNRELATED"]
+    prompt = f"""
+You are ValidationAI for a multi-choice field. Map the user's intent to the allowed topic options.
+Question: {step.question}
+Allowed values (return only these names when VALID): {json.dumps(allowed_names)}
+User response: {user_text}
+
+Focus on intent only. Accept vague, long, or slightly off answers; normalize to one or more allowed topic names.
+Return INVALID only for: empty, gibberish, spam, or completely unrelated input.
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": one of {allowed_reason_codes}, "normalized_value": array of topic names from allowed list, or null }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. normalized_value must be a subset of the allowed topic names when VALID."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+        status = obj.get("status")
+        reason_code = obj.get("reason_code") or "UNRELATED"
+        normalized_value = obj.get("normalized_value")
+        if status == "VALID" and isinstance(normalized_value, list):
+            seen = set()
+            out = []
+            for x in normalized_value:
+                key = str(x).strip().lower()
+                if key in name_to_topic and key not in seen:
+                    seen.add(key)
+                    out.append(name_to_topic[key])
+            if out:
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": out}
+        return {"status": "INVALID", "reason_code": reason_code if reason_code in allowed_reason_codes else "UNRELATED", "normalized_value": None}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+
+
+def _validation_ai_enum_intent_target_audiences(
+    client: OpenAI,
+    step: StepDefinition,
+    user_text: str,
+    allowed_audiences: List[dict],
+) -> Dict[str, Any]:
+    """Map free-text user input to allowed target audiences (by name). Returns list of full audience objects."""
+    if not allowed_audiences:
+        return {"status": "INVALID", "reason_code": "ENUM_INVALID", "normalized_value": None}
+    allowed_names = [a.get("name", "").strip() for a in allowed_audiences if a.get("name")]
+    name_to_audience = {a.get("name", "").strip().lower(): a for a in allowed_audiences if a.get("name")}
+    if not name_to_audience:
+        return {"status": "INVALID", "reason_code": "ENUM_INVALID", "normalized_value": None}
+    allowed_reason_codes = ["EMPTY", "GIBBERISH", "SPAM", "UNRELATED"]
+    prompt = f"""
+You are ValidationAI for a multi-choice field. Map the user's intent to the allowed target audience options.
+Question: {step.question}
+Allowed values (return only these names when VALID): {json.dumps(allowed_names)}
+User response: {user_text}
+
+Focus on intent only. Accept vague, long, or slightly off answers; normalize to one or more allowed audience names.
+Return INVALID only for: empty, gibberish, spam, or completely unrelated input.
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": one of {allowed_reason_codes}, "normalized_value": array of audience names from allowed list, or null }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. normalized_value must be a subset of the allowed audience names when VALID."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+        status = obj.get("status")
+        reason_code = obj.get("reason_code") or "UNRELATED"
+        normalized_value = obj.get("normalized_value")
+        if status == "VALID" and isinstance(normalized_value, list):
+            seen = set()
+            out = []
+            for x in normalized_value:
+                key = str(x).strip().lower()
+                if key in name_to_audience and key not in seen:
+                    seen.add(key)
+                    out.append(name_to_audience[key])
+            if out:
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": out}
+        return {"status": "INVALID", "reason_code": reason_code if reason_code in allowed_reason_codes else "UNRELATED", "normalized_value": None}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+
+
 def validate_step(
     step_name: str,
-    answer: Union[str, List[str]],
+    answer: Union[str, List[str], List[dict]],
     source: str,
     expected_step_name: Optional[str] = None,
     profile_context: Optional[Dict[str, Any]] = None,
+    allowed_topics_for_step: Optional[List[dict]] = None,
+    allowed_target_audiences_for_step: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     step = get_step_by_name(step_name)
     if not step:
@@ -513,6 +641,81 @@ def validate_step(
             if ai_res.get("status") == "INVALID":
                 return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
         return {"status": "VALID", "reason_code": "OK", "normalized_value": _normalize_name_for_validation(text)}
+
+    # topics_multiselect: allowed values from DB (allowed_topics_for_step)
+    if step.validation_mode == "topics_multiselect" and allowed_topics_for_step is not None:
+        if source == "selection":
+            # answer is list of topic objects; validate by _id/slug and return full topic objects
+            if not isinstance(normalized, list) or not normalized:
+                return {"status": "INVALID", "reason_code": "EMPTY", "normalized_value": None}
+            by_id = {str(t.get("_id", "")).strip(): t for t in allowed_topics_for_step}
+            by_slug = {str(t.get("slug", "")).strip().lower(): t for t in allowed_topics_for_step}
+            out = []
+            for sel in normalized:
+                if not isinstance(sel, dict):
+                    continue
+                sid = str(sel.get("_id", "")).strip()
+                sslug = str(sel.get("slug", "")).strip().lower()
+                if sid and sid in by_id:
+                    out.append(by_id[sid])
+                elif sslug and sslug in by_slug:
+                    out.append(by_slug[sslug])
+            if not out:
+                return {"status": "INVALID", "reason_code": "ENUM_INVALID", "normalized_value": None}
+            # Dedupe by _id while preserving order
+            seen_ids = set()
+            deduped = []
+            for t in out:
+                tid = t.get("_id")
+                if tid not in seen_ids:
+                    seen_ids.add(tid)
+                    deduped.append(t)
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": deduped}
+        else:
+            # source == "text": AI maps user text to topic names, then we map to full topic objects
+            text = normalized if isinstance(normalized, str) else " ".join(str(x).strip() for x in normalized if str(x).strip())
+            if not text.strip():
+                return {"status": "INVALID", "reason_code": "EMPTY", "normalized_value": None}
+            if not client:
+                return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+            ai_res = _validation_ai_enum_intent_topics(client, step, text, allowed_topics_for_step)
+            return ai_res
+
+    # target_audiences_multiselect: allowed values from DB (allowed_target_audiences_for_step)
+    if step.validation_mode == "target_audiences_multiselect" and allowed_target_audiences_for_step is not None:
+        if source == "selection":
+            if not isinstance(normalized, list) or not normalized:
+                return {"status": "INVALID", "reason_code": "EMPTY", "normalized_value": None}
+            by_id = {str(t.get("_id", "")).strip(): t for t in allowed_target_audiences_for_step}
+            by_slug = {str(t.get("slug", "")).strip().lower(): t for t in allowed_target_audiences_for_step}
+            out = []
+            for sel in normalized:
+                if not isinstance(sel, dict):
+                    continue
+                sid = str(sel.get("_id", "")).strip()
+                sslug = str(sel.get("slug", "")).strip().lower()
+                if sid and sid in by_id:
+                    out.append(by_id[sid])
+                elif sslug and sslug in by_slug:
+                    out.append(by_slug[sslug])
+            if not out:
+                return {"status": "INVALID", "reason_code": "ENUM_INVALID", "normalized_value": None}
+            seen_ids = set()
+            deduped = []
+            for t in out:
+                tid = t.get("_id")
+                if tid not in seen_ids:
+                    seen_ids.add(tid)
+                    deduped.append(t)
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": deduped}
+        else:
+            text = normalized if isinstance(normalized, str) else " ".join(str(x).strip() for x in normalized if str(x).strip())
+            if not text.strip():
+                return {"status": "INVALID", "reason_code": "EMPTY", "normalized_value": None}
+            if not client:
+                return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+            ai_res = _validation_ai_enum_intent_target_audiences(client, step, text, allowed_target_audiences_for_step)
+            return ai_res
 
     normalized, err = _validate_rule_based(step, normalized, source)
     if err:
@@ -596,11 +799,15 @@ def get_expected_next_step(current_step_name: Optional[str] = None) -> Optional[
     return None
 
 
-def validate_full_profile(profile_data: dict) -> List[str]:
+def validate_full_profile(
+    profile_data: dict,
+    allowed_topics: Optional[List[dict]] = None,
+    allowed_target_audiences: Optional[List[dict]] = None,
+) -> List[str]:
     errors = []
     field_mapping = {
         "full_name": ("full_name", "text"),
-        "topics": ("topics", "text"),
+        "topics": ("topics", "selection"),
         "speaking_formats": ("speaking_formats", "selection"),
         "delivery_mode": ("delivery_mode", "selection"),
         "linkedin_url": ("linkedin_url", "text"),
@@ -608,7 +815,7 @@ def validate_full_profile(profile_data: dict) -> List[str]:
         "video_links": ("video_links", "text"),
         "talk_description": ("talk_description", "text"),
         "key_takeaways": ("key_takeaways", "text"),
-        "target_audiences": ("target_audiences", "text"),
+        "target_audiences": ("target_audiences", "selection"),
     }
     for step_def in STEPS:
         field_name = step_def.step_name
@@ -619,7 +826,11 @@ def validate_full_profile(profile_data: dict) -> List[str]:
         if not step_def.required and (value is None or value == [] or value == ""):
             continue
         source = default_source
-        if step_def.validation_mode == "strict_enum_code" and step_def.allowed_values:
+        if step_def.validation_mode == "topics_multiselect":
+            source = "selection" if isinstance(value, list) and value and isinstance(value[0], dict) else "text"
+        elif step_def.validation_mode == "target_audiences_multiselect":
+            source = "selection" if isinstance(value, list) and value and isinstance(value[0], dict) else "text"
+        elif step_def.validation_mode == "strict_enum_code" and step_def.allowed_values:
             if isinstance(value, list):
                 all_in_allowed = all(
                     str(v).strip().lower() in [a.lower() for a in step_def.allowed_values]
@@ -633,6 +844,8 @@ def validate_full_profile(profile_data: dict) -> List[str]:
             answer=value,
             source=source,
             profile_context=profile_data,
+            allowed_topics_for_step=allowed_topics if field_name == "topics" else None,
+            allowed_target_audiences_for_step=allowed_target_audiences if field_name == "target_audiences" else None,
         )
         if res.get("status") != "VALID":
             errors.append(field_name)
