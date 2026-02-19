@@ -93,7 +93,7 @@ STEPS: List[StepDefinition] = [
     StepDefinition(
         step_name="past_speaking_examples",
         form_type="textarea",
-        question="Past speaking examples or events (optional)",
+        question="Past speaking examples or events",
         required=False,
         multi_select=False,
         allowed_values=None,

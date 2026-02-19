@@ -41,6 +41,7 @@ class SpeakerProfileModel:
             "full_name": full_name.strip(),
             "current_step": next_step_name,
             "completed_steps": ["full_name"],
+            "conversation": [],
             "user_id": user_id,
             "createdAt": datetime.utcnow(),
         }
@@ -48,16 +49,63 @@ class SpeakerProfileModel:
         doc["_id"] = result.inserted_id
         return doc
 
+    async def append_conversation(
+        self,
+        profile_id: str,
+        agent_content: Any,
+        user_content: Any,
+    ) -> Optional[dict]:
+        """
+        Append one agent message (question) and one user message (answer) to the profile's conversation array.
+        content can be str or list (e.g. for topics/target_audiences).
+        """
+        try:
+            oid = ObjectId(profile_id)
+        except Exception:
+            return None
+        result = await self.collection.update_one(
+            {"_id": oid},
+            {
+                "$push": {
+                    "conversation": {
+                        "$each": [
+                            {"role": "agent", "content": agent_content},
+                            {"role": "user", "content": user_content},
+                        ]
+                    }
+                }
+            },
+        )
+        if result.matched_count == 0:
+            return None
+        return await self.get_profile(profile_id)
+
+    async def update_last_assistant_message(self, profile_id: str, message: str) -> Optional[dict]:
+        """Store the last AI-generated assistant message so it can be used as the agent content for the next step's conversation entry."""
+        try:
+            oid = ObjectId(profile_id)
+        except Exception:
+            return None
+        result = await self.collection.update_one(
+            {"_id": oid},
+            {"$set": {"last_assistant_message": message, "updatedAt": datetime.utcnow()}},
+        )
+        if result.matched_count == 0:
+            return None
+        return await self.get_profile(profile_id)
+
     async def update_step(
         self,
         profile_id: str,
         updates: Dict[str, Any],
         next_step_name: Optional[str],
         completed_steps: List[str],
+        last_assistant_message: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Update profile with new field values and progress.
         Only allowed profile fields are written; current_step and completed_steps are set.
+        Optionally set last_assistant_message (AI-generated transition shown before the next step).
         """
         try:
             oid = ObjectId(profile_id)
@@ -67,6 +115,8 @@ class SpeakerProfileModel:
         allowed_updates["current_step"] = next_step_name
         allowed_updates["completed_steps"] = completed_steps
         allowed_updates["updatedAt"] = datetime.utcnow()
+        if last_assistant_message is not None:
+            allowed_updates["last_assistant_message"] = last_assistant_message
         result = await self.collection.update_one(
             {"_id": oid},
             {"$set": allowed_updates},

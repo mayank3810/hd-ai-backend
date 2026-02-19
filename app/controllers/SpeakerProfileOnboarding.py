@@ -88,6 +88,62 @@ async def get_speaker_profile_by_id(
         )
 
 
+@router.get("/{profile_id}/resume-onboarding")
+async def resume_onboarding(
+    profile_id: str,
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+    speaker_topics_model=Depends(get_speaker_topics_model),
+    speaker_target_audience_model=Depends(get_speaker_target_audience_model),
+):
+    """
+    Resume onboarding: return stored conversation and current step payload.
+    FE renders conversation as chat, shows step as form, then calls POST /verify-step as in create-profile.
+    """
+    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"data": None, "error": "User ID not found in token.", "success": False},
+        )
+    profile = await model.get_profile_by_id_and_user(profile_id, str(user_id))
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={"data": None, "error": "Profile not found.", "success": False},
+        )
+    conversation = profile.get("conversation") or []
+    current_step_name = profile.get("current_step")
+    if current_step_name:
+        step_def = get_step_by_name(current_step_name)
+        step_payload = await _step_payload_with_dynamic_allowed(
+            step_def, speaker_topics_model, speaker_target_audience_model
+        )
+        # Generate question for current step like verify-step: use AI transition from last completed step.
+        completed_steps = profile.get("completed_steps") or []
+        if completed_steps and step_payload:
+            last_step_name = completed_steps[-1]
+            last_answer = profile.get(last_step_name)
+            if last_answer is not None:
+                ai_question = generate_transition_message(
+                    step_name=last_step_name,
+                    normalized_answer=last_answer,
+                    next_step=step_payload,
+                    is_last_step=False,
+                )
+                step_payload = {**step_payload, "question": ai_question}
+    else:
+        step_payload = None
+    is_complete = current_step_name is None
+    return {
+        "profile_id": profile_id,
+        "is_complete": is_complete,
+        "completed_steps": profile.get("completed_steps") or [],
+        "conversation": conversation,
+        "next_step": step_payload,
+    }
+
+
 @router.post("/init")
 async def init_onboarding():
     """
@@ -221,19 +277,28 @@ async def verify_step(
         is_last_step=is_last,
     )
 
+    # Agent message for the step just completed: first step uses config question; later steps use the AI transition we stored last time.
+    agent_message_for_step = (
+        profile.get("last_assistant_message") if (profile and body.step != "full_name") else None
+    ) or step_def.question
+
     profile_id = body.profile_id
     if body.step == "full_name" and not body.profile_id:
         doc = await model.create_profile(normalized, user_id=user_id)
         profile_id = str(doc["_id"])
+        await model.append_conversation(profile_id, agent_message_for_step, normalized)
+        await model.update_last_assistant_message(profile_id, assistant_message)
     elif body.profile_id and profile:
         completed = list(profile.get("completed_steps") or [])
         if body.step not in completed:
             completed.append(body.step)
+        await model.append_conversation(profile_id, agent_message_for_step, normalized)
         await model.update_step(
             body.profile_id,
             updates={body.step: normalized},
             next_step_name=next_step_name,
             completed_steps=completed,
+            last_assistant_message=assistant_message,
         )
         profile_id = body.profile_id
 
