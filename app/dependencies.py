@@ -32,6 +32,7 @@ _queue_status_service = None
 _analytics_cues_preset_service = None
 _excel_schedule_service = None
 _speaker_profile_model = None
+_scraper_service = None
 
 
 def get_auth_service():
@@ -271,6 +272,15 @@ def get_speaker_profile_model():
     return _speaker_profile_model
 
 
+def get_scraper_service():
+    """Get singleton ScraperService instance"""
+    global _scraper_service
+    if _scraper_service is None:
+        from app.services.Scraper import ScraperService
+        _scraper_service = ScraperService()
+    return _scraper_service
+
+
 def cleanup_resources():
     """
     Cleanup all singleton resources. Call this on application shutdown.
@@ -282,7 +292,7 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _scraper_service
 
     # Reset all services
     _auth_service = None
@@ -312,3 +322,4 @@ def cleanup_resources():
     _analytics_cues_preset_service = None
     _excel_schedule_service = None
     _speaker_profile_model = None
+    _scraper_service = None

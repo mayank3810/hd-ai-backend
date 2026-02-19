@@ -10,7 +10,7 @@ from app.middleware.JWTVerification import jwt_validator
 from app.controllers import BookingAdmin, AirbnbAdmin, CompetitorProperty, CompetitorComparison, FilterPreset, DeploymentCues
 from app.models.Operator import OperatorModel
 from app.controllers import BookingAdmin, AirbnbAdmin, CompetitorProperty, CompetitorComparison, FilterPreset, ImageCaption
-from app.controllers import Booking, Airbnb, TemporaryCompetitor, CueProperties, OnboardingStatus, QueueStatus, AnalyticsCuesPreset, ExcelSchedule, SpeakerProfileOnboarding
+from app.controllers import Booking, Airbnb, TemporaryCompetitor, CueProperties, OnboardingStatus, QueueStatus, AnalyticsCuesPreset, ExcelSchedule, SpeakerProfileOnboarding, Scraper
 import logging
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -58,6 +58,7 @@ app.include_router(QueueStatus.router)
 app.include_router(AnalyticsCuesPreset.router)
 app.include_router(ExcelSchedule.router)
 app.include_router(SpeakerProfileOnboarding.router)
+app.include_router(Scraper.router, dependencies=[Depends(jwt_validator)])
 
 
 @app.on_event("startup")
