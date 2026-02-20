@@ -43,7 +43,8 @@ def _fallback_transition(
     if step_name == "full_name":
         name = str(normalized_answer or "").strip()
         first = name.split()[0] if name else ""
-        return f"Nice to meet you{', ' + first if first else ''}! {next_step.get('question') if next_step else 'What topics do you speak about?'}"
+        next_q = next_step.get("question") if next_step else "What are some of the topics you want to cover in your speaking opportunities?"
+        return f"Great, it's nice to meet you, {first}! {next_q}" if first else f"Great, it's nice to meet you! {next_q}"
     if next_step and next_step.get("question"):
         return f"Got it. {next_step['question']}"
     return "Got it. What's next?"
@@ -62,7 +63,7 @@ def _fallback_recovery(
     variants = []
     if reason_code in ("EMPTY", "REQUIRED"):
         variants = [
-            f"I didn't catch an answer—{q}",
+            f"I didn't catch that—could you share? {q}",
             f"Could you share that with me? {q}",
             f"Just to make sure I understand—{q}",
         ]
@@ -125,46 +126,51 @@ def generate_welcome_message(first_step_question: str) -> str:
     """
     Generate an AI welcome message for the first step (init).
     Returns HTML-formatted message with line breaks for better spacing.
+    Tone matches conversation-sample: warm greeting, value prop, then "Let's begin with the basics. What is your name?"
     """
+    fallback_msg = (
+        "Hello! Thanks for joining Human Driven AI! My job is to find the right speaking opportunities for you "
+        "including drafting the submission materials for each event.<br>Let's begin with the basics. What is your name?"
+    )
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return f"Welcome to Human Driven AI.<br>I will help you to create an account and find matching speaking opportunities<br>{first_step_question}"
-    
+        return fallback_msg
+
     client = OpenAI(api_key=api_key)
     prompt = {
         "first_step_question": first_step_question,
         "requirements": [
-            "Write a short, warm welcome message (3 lines maximum).",
-            "Line 1: Welcome to Human Driven AI.",
-            "Line 2: Explain that you will help them create an account and find matching speaking opportunities.",
-            "Line 3: Ask for their name (use the first_step_question naturally).",
-            "Format: Use <br> tags for line breaks. Keep each line concise (one short sentence per line).",
-            "Vary the wording slightly each time while keeping the same structure.",
+            "Write a short, warm welcome message (3 lines maximum) in a friendly Speaker Pitcher–style conversation.",
+            "Line 1: Warm greeting (e.g. 'Hello! Thanks for joining...') and state your job: find the right speaking opportunities for them and help with drafting submission materials for each event. Use product name 'Human Driven AI'.",
+            "Line 2: Optional short reassurance about the process (can be brief or folded into line 1).",
+            "Line 3: End with 'Let's begin with the basics. What is your name?' (or very close).",
+            "Tone: friendly and conversational like the Speaker Pitcher sample. Use <br> tags for line breaks. No JSON. Keep it concise.",
         ],
     }
-    
+
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a helpful conversational assistant for Human Driven AI. Return ONLY the HTML-formatted message with <br> tags for line breaks. No JSON. Keep it short and concise - maximum 3 lines."},
+                {
+                    "role": "system",
+                    "content": "You are a friendly onboarding agent for Human Driven AI. Match the conversational style of a Speaker Pitcher sample: warm greeting, clear value prop (finding speaking opportunities, drafting submission materials), then ask for their name. Return ONLY the HTML-formatted message with <br> tags for line breaks. No JSON. Maximum 3 lines.",
+                },
                 {"role": "user", "content": str(prompt)},
             ],
-            temperature=0.8,  # Higher temperature for more variation
+            temperature=0.8,
             timeout=10,
         )
         msg = (completion.choices[0].message.content or "").strip()
-        # Ensure we have <br> tags, fallback to adding them if AI didn't include them
         if "<br>" not in msg and "\n" in msg:
             msg = msg.replace("\n", "<br>")
-        elif "<br>" not in msg:
-            # If no line breaks, try to add them after periods (simple heuristic)
+        elif "<br>" not in msg and ". " in msg:
             parts = msg.split(". ")
             if len(parts) >= 2:
                 msg = ".<br>".join(parts)
-        return msg or f"Welcome to Human Driven AI.<br>I will help you to create an account and find matching speaking opportunities<br>{first_step_question}"
+        return msg or fallback_msg
     except Exception:
-        return f"Welcome to Human Driven AI.<br>I will help you to create an account and find matching speaking opportunities<br>{first_step_question}"
+        return fallback_msg
 
 
 def generate_transition_message(
@@ -189,7 +195,7 @@ def generate_transition_message(
             "normalized_answer": normalized_answer,
             "requirements": [
                 "This was the final step. Acknowledge the user's answer briefly.",
-                "Congratulate them on completing their speaker profile. Do NOT ask any further questions.",
+                "Congratulate them warmly on completing their speaker profile; thank them for sharing. Do NOT ask any further questions.",
                 "Keep it natural, friendly, and concise (1-2 sentences).",
             ],
             "variation_seed": seed,
@@ -217,10 +223,10 @@ def generate_transition_message(
         "normalized_answer": normalized_answer,
         "next_question": next_q,
         "requirements": [
-            "Write one short assistant message that acknowledges the user's answer and smoothly asks the next question.",
-            "Do not mention validation, rules, or grammar.",
-            "Assume good intent.",
-            "Keep it natural, friendly, and concise.",
+            "Match a friendly Speaker Pitcher–style flow: brief acknowledgment then ask the next question in a natural, conversational way.",
+            "If the step just completed was full_name: acknowledge with 'Great, it's nice to meet you, [first name]!' then rephrase the next_question conversationally (e.g. for topics: 'What are some of the topics you want to cover in your speaking opportunities? You can always add more to your profile later.').",
+            "For any other step: use short acknowledgments like 'Great, thanks!', 'Got it.', or 'Thanks.' then smoothly ask the next question. Rephrase the next_question conversationally when it fits (e.g. delivery: 'Do you want virtual events or in-person, or both?'; speaking formats: 'Do you want keynotes, workshops, solo presentations, panels? You can choose all of these.').",
+            "Do not mention validation, rules, or grammar. Assume good intent. Tone: warm and conversational. Return ONLY the assistant message. No JSON.",
         ],
         "variation_seed": seed,
     }
@@ -229,7 +235,10 @@ def generate_transition_message(
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a helpful conversational assistant. Return ONLY the assistant message text. No JSON."},
+                {
+                    "role": "system",
+                    "content": "You are a friendly conversational assistant. Match Speaker Pitcher–style flow: brief acknowledgment (e.g. Great, thanks! / Got it.) then natural rephrasing of the next question. Return ONLY the assistant message text. No JSON.",
+                },
                 {"role": "user", "content": str(prompt)},
             ],
             temperature=0.6,
@@ -288,8 +297,9 @@ def generate_recovery_message(
         "retry_count": retry_count,
         "requirements": [
             "Write ONE short assistant message asking the user to try again.",
+            "Tone: friendly and conversational (like the Speaker Pitcher sample). Assume good intent; do not mention validation or grammar.",
             "Do not mention grammar, spelling, or 'validation'.",
-            "Assume the user has good intent. Focus on intent, not length or picking all options.",
+            "Focus on intent, not length or picking all options.",
             "Vary phrasing compared to prior attempts (retry_count).",
             "If retry_count > 1, escalate help by giving an example or offering the allowed options (if provided).",
             "Do not repeat the exact same wording across retries.",
@@ -301,7 +311,10 @@ def generate_recovery_message(
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a helpful conversational assistant. Return ONLY the assistant message text. No JSON."},
+                {
+                    "role": "system",
+                    "content": "You are a friendly conversational assistant. Match the same warm, conversational tone as the rest of the flow. Return ONLY the assistant message text. No JSON.",
+                },
                 {"role": "user", "content": str(payload)},
             ],
             temperature=0.8,
