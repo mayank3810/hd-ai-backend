@@ -105,7 +105,7 @@ class SpeakerProfileCreateSchema(BaseModel):
     address_country: Optional[str] = Field(default=None, description="Country")
     phone_country_code: Optional[str] = Field(default=None, description="Phone country code (e.g. +1, +44, +91)")
     phone_number: Optional[str] = Field(default=None, description="Phone number (without country code)")
-    professional_memberships: Optional[str] = Field(default=None, description="Professional memberships or affiliations (text area)")
+    professional_memberships: Optional[List[str]] = Field(default=None, description="Professional memberships or affiliations (array of strings)")
     preferred_speaking_time: Optional[str] = Field(default=None, description="E.g. 10-, 20-, 30-, 40-minute or one hour")
 
 
@@ -133,7 +133,7 @@ class SpeakerProfileUpdateSchema(BaseModel):
     address_country: Optional[str] = None
     phone_country_code: Optional[str] = None
     phone_number: Optional[str] = None
-    professional_memberships: Optional[str] = None
+    professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
 
     class Config:
