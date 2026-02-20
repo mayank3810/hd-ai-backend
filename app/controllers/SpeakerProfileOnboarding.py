@@ -3,7 +3,9 @@ Speaker Profile onboarding: POST /init, POST /verify-step, POST /speaker-profile
 Stateless for init and verify-step; JWT required for final save.
 """
 import logging
+import os
 from fastapi import APIRouter, Depends, HTTPException
+from postmarker.core import PostmarkClient
 
 from app.config.speaker_profile_steps import get_first_step, get_next_step, get_step_by_name, is_last_step, step_to_response
 from app.middleware.JWTVerification import jwt_validator
@@ -341,6 +343,24 @@ async def verify_step(
             completed_steps=completed,
             last_assistant_message=assistant_message,
         )
+        if is_last:
+            to_email = profile.get("email")
+            full_name = profile.get("full_name") or ""
+            from_email = os.getenv("FROM_EMAIL_ID")
+            postmark_token = os.getenv("POSTMARK-SERVER-API-TOKEN")
+            if to_email and from_email and postmark_token:
+                try:
+                    postmark = PostmarkClient(postmark_token)
+                    postmark.emails.send_with_template(
+                        From=from_email,
+                        To=to_email,
+                        TemplateId=43586835,
+                        TemplateModel={"name": full_name},
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send onboarding-complete email via Postmark: %s", e)
+            else:
+                logger.warning("Skipping onboarding-complete email: missing to_email, FROM_EMAIL_ID, or POSTMARK-SERVER-API-TOKEN")
         profile_id = body.profile_id
 
     return {
