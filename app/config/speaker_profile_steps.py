@@ -54,7 +54,7 @@ STEPS: List[StepDefinition] = [
         min_length=5,
         max_length=254,
         split_on_conjunctions=False,
-        uses_ai=False,
+        uses_ai=True,
     ),
     StepDefinition(
         step_name="topics",

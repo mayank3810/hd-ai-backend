@@ -452,7 +452,7 @@ def _reason_code_from_rule_error(err: str) -> str:
 
 
 def _validation_ai_full_name_extract(client: OpenAI, user_text: str) -> Dict[str, Any]:
-    """Extract the person's full name from free-form text (e.g. 'My name is Manish Gautam' -> 'Manish Gautam')."""
+    """Extract the person's full name from free-form text. Returns REFUSAL when user declines; INVALID when no real full name."""
     prompt = f"""
 The user was asked for their full name. They replied: "{user_text}"
 
@@ -460,15 +460,17 @@ Extract the person's full name only. Return it as normalized_value (e.g. "First 
 - If they wrote a sentence like "My name is Manish Gautam" or "I'm John Smith", extract and return only the name: "Manish Gautam" or "John Smith".
 - If they already wrote just their name (e.g. "Manish Gautam"), return that, normalized (e.g. "Manish Gautam").
 - Use standard capitalization (e.g. "Manish Gautam", not "MANISH GAUTAM").
-- If you cannot identify a real person's full name (at least first and last), return INVALID.
+- If the user declines to share their name (e.g. "I don't want to share", "I prefer not to say", "I'd rather not"), return INVALID with reason_code "REFUSAL".
+- If you cannot identify a real person's full name (at least first and last), return INVALID with reason_code "INVALID_FULL_NAME".
+- If the reply has one plausible first name but the rest is clearly not a real name (e.g. random letters, keyboard smash like "Akash ksdgjsdgrwgb"), return INVALID with reason_code "INVALID_FULL_NAME". Both first and last must look like real names.
 
-Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "INVALID_FULL_NAME", "normalized_value": "Extracted Full Name" or null }}
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "REFUSAL" | "INVALID_FULL_NAME", "normalized_value": "Extracted Full Name" or null }}
 """
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Return ONLY JSON. When status is VALID, normalized_value must be the extracted full name string (e.g. \"John Smith\"). When INVALID, normalized_value must be null."},
+                {"role": "system", "content": "Return ONLY JSON. When status is VALID, normalized_value must be the extracted full name (first and last, both real-looking). When INVALID, use reason_code REFUSAL if user declined to share, else INVALID_FULL_NAME. normalized_value must be null when INVALID."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -479,21 +481,59 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "INVAL
             return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
         status = obj.get("status")
         normalized_value = obj.get("normalized_value")
+        reason = obj.get("reason_code") or "INVALID_FULL_NAME"
         if status == "VALID" and isinstance(normalized_value, str) and normalized_value.strip():
             return {"status": "VALID", "reason_code": "OK", "normalized_value": normalized_value.strip()}
-        return {"status": "INVALID", "reason_code": obj.get("reason_code") or "INVALID_FULL_NAME", "normalized_value": None}
+        return {"status": "INVALID", "reason_code": reason if reason in ("REFUSAL", "INVALID_FULL_NAME") else "INVALID_FULL_NAME", "normalized_value": None}
     except Exception:
         return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
 
 
+def _validation_ai_email_extract(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Extract email from free-form text. Format is verified in code with regex; AI does not judge real/temporary."""
+    prompt = f"""
+The user was asked for their email address. They replied: "{user_text}"
+
+Extract the single email address from the text and return it.
+- From "my email is john@example.com" or "it's yabaf75886@bitoini.com" extract only the email: john@example.com or yabaf75886@bitoini.com.
+- If they wrote just the email (e.g. "john@example.com"), return that.
+- If the user declines to share their email (e.g. "I don't want to share", "I prefer not to give my email"), return INVALID with reason_code "REFUSAL".
+- Do NOT reject or return INVALID based on whether the email looks temporary or disposable. Our system will verify format separately.
+- Return INVALID with reason_code "INVALID_EMAIL" only if you cannot find exactly one email-like substring (e.g. no email, or multiple emails and unclear which one).
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "REFUSAL" | "INVALID_EMAIL", "normalized_value": "extracted@email.com" or null }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. Extract the email the user gave. Use reason_code REFUSAL when user declines to share; INVALID_EMAIL when no email found. Do not judge if it is temporary or disposable. When status is VALID, normalized_value must be the single extracted email string, lowercase. When INVALID, normalized_value must be null."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
+        status = obj.get("status")
+        normalized_value = obj.get("normalized_value")
+        reason = obj.get("reason_code") or "INVALID_EMAIL"
+        if status == "VALID" and isinstance(normalized_value, str) and normalized_value.strip():
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": normalized_value.strip().lower()}
+        return {"status": "INVALID", "reason_code": reason if reason in ("REFUSAL", "INVALID_EMAIL") else "INVALID_EMAIL", "normalized_value": None}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
+
+
 def _validation_ai_full_name_check(client: OpenAI, name: str) -> Dict[str, Any]:
-    """Return INVALID if name looks like gibberish/random, not a real person's name."""
+    """Return INVALID if name looks like gibberish/random. Both first and last must look like real names."""
     prompt = f"""
 The user was asked for their full name. They entered: "{name}"
 
-Is this a realistic full name (first and last, real-looking name) or random characters/gibberish/keyboard smash?
-- If it looks like a real person's name (e.g. "John Smith", "Marie-Claire O'Brien"), return VALID.
-- If it is random letters, nonsense, or clearly not a real name (e.g. "asfas cdfeae", "xyz abc"), return INVALID.
+Both the first name AND the last name (or every part of the name) must look like a real person's name.
+- If the full name looks real (e.g. "John Smith", "Marie-Claire O'Brien", "Akash Kumar"), return VALID.
+- If any part is clearly not a real name—random letters, keyboard smash, gibberish (e.g. "Akash ksdgjsdgrwgb", "John xyzabc", "asdf qwerty")—return INVALID. The last name must be a plausible real name, not random characters.
 
 Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "INVALID_FULL_NAME" if INVALID else "OK" }}
 """
@@ -703,11 +743,13 @@ def validate_step(
     # code_full_name: extract name from free-form text (e.g. "My name is Manish Gautam") then format + gibberish check
     if step.validation_mode == "code_full_name":
         text = normalized if isinstance(normalized, str) else " ".join(normalized)
-        # When AI is available, extract the person's full name from sentences like "My name is Manish Gautam"
         if client and text.strip():
             extract_res = _validation_ai_full_name_extract(client, text)
             if extract_res.get("status") == "VALID" and extract_res.get("normalized_value"):
                 text = extract_res["normalized_value"]
+            else:
+                # Surface REFUSAL or INVALID_FULL_NAME from extract so recovery can show calm tone when user declined
+                return {"status": "INVALID", "reason_code": extract_res.get("reason_code") or "INVALID_FULL_NAME", "normalized_value": None}
         if not validate_full_name(text):
             return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
         if client:
@@ -716,12 +758,22 @@ def validate_step(
                 return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
         return {"status": "VALID", "reason_code": "OK", "normalized_value": _normalize_name_for_validation(text)}
 
-    # email_regex: regex-only validation, no AI
+    # email_regex: AI extracts email from text; we verify format with regex. Surface REFUSAL for calm recovery message.
     if step.validation_mode == "email_regex":
         text = (normalized if isinstance(normalized, str) else " ".join(str(x).strip() for x in normalized if str(x).strip())).strip()
-        if not validate_email(text):
+        if not text:
             return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
-        return {"status": "VALID", "reason_code": "OK", "normalized_value": text.strip().lower()}
+        if client:
+            ai_res = _validation_ai_email_extract(client, text)
+            if ai_res.get("status") == "VALID" and ai_res.get("normalized_value"):
+                extracted = ai_res["normalized_value"]
+                if validate_email(extracted):
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": extracted.strip().lower()}
+            else:
+                return {"status": "INVALID", "reason_code": ai_res.get("reason_code") or "INVALID_EMAIL", "normalized_value": None}
+        if validate_email(text):
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": text.strip().lower()}
+        return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
 
     # topics_multiselect: allowed values from DB (allowed_topics_for_step)
     if step.validation_mode == "topics_multiselect" and allowed_topics_for_step is not None:

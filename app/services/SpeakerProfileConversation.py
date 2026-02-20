@@ -72,6 +72,22 @@ def _fallback_recovery(
             "Let's start from the beginning—what is your full name?",
             "I don't have your profile yet. Could you tell me your full name first?",
         ]
+    elif reason_code == "REFUSAL":
+        # Calm, short reply when user declines. Do not explain what we need it for or invite other questions.
+        if step.step_name == "full_name":
+            variants = [
+                "No problem. When you're ready, share your full name and we can continue.",
+                "That's okay. Whenever you're ready, share your full name to continue.",
+            ]
+        elif step.step_name == "email":
+            variants = [
+                "No problem. When you're ready, share your email and we can continue.",
+                "That's okay. Whenever you're ready, share your email to continue.",
+            ]
+        else:
+            variants = [
+                "No problem. When you're ready, we can continue.",
+            ]
     elif reason_code == "INVALID_FULL_NAME":
         variants = [
             "That doesn't quite look like a full name. Could you share your real full name (first and last)?",
@@ -299,6 +315,7 @@ def generate_recovery_message(
             "Write ONE short assistant message asking the user to try again.",
             "Tone: friendly and conversational (like the Speaker Pitcher sample). Assume good intent; do not mention validation or grammar.",
             "Do not mention grammar, spelling, or 'validation'.",
+            "Do NOT explain what we need the field for. Do NOT offer to answer other questions or invite the user to ask (e.g. no 'just ask!', no 'I can explain what you need it for'). Your only job is to get the information for the speaker profile—re-ask for the requested field only.",
             "Focus on intent, not length or picking all options.",
             "Vary phrasing compared to prior attempts (retry_count).",
             "If retry_count > 1, escalate help by giving an example or offering the allowed options (if provided).",
