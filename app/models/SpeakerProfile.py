@@ -13,6 +13,9 @@ from app.config.speaker_profile_steps import get_next_step
 PROFILE_FIELDS = [
     "full_name", "email", "topics", "speaking_formats", "delivery_mode", "linkedin_url",
     "past_speaking_examples", "video_links", "talk_description", "key_takeaways", "target_audiences",
+    # Editable after creation (not part of verify-step)
+    "name_salutation", "bio", "twitter", "facebook", "address_city", "address_state", "address_country",
+    "phone_country_code", "phone_number", "professional_memberships", "preferred_speaking_time",
 ]
 
 
@@ -120,6 +123,27 @@ class SpeakerProfileModel:
         result = await self.collection.update_one(
             {"_id": oid},
             {"$set": allowed_updates},
+        )
+        if result.matched_count == 0:
+            return None
+        return await self.get_profile(profile_id)
+
+    async def update_profile(self, profile_id: str, updates: Dict[str, Any]) -> Optional[dict]:
+        """
+        Update profile with given field values. Only PROFILE_FIELDS are applied.
+        Does not change user_id, conversation, current_step, completed_steps, etc.
+        """
+        try:
+            oid = ObjectId(profile_id)
+        except Exception:
+            return None
+        allowed = {k: v for k, v in updates.items() if k in PROFILE_FIELDS}
+        if not allowed:
+            return await self.get_profile(profile_id)
+        allowed["updatedAt"] = datetime.utcnow()
+        result = await self.collection.update_one(
+            {"_id": oid},
+            {"$set": allowed},
         )
         if result.matched_count == 0:
             return None

@@ -90,8 +90,51 @@ class SpeakerProfileCreateSchema(BaseModel):
     speaking_formats: List[str] = Field(...)
     delivery_mode: List[str] = Field(...)
     linkedin_url: str = Field(...)  # validated as URL in service or via HttpUrl
-    past_speaking_examples: Optional[str] = Field(default=None)
+    past_speaking_examples: Optional[List[str]] = Field(default=None)  # array; each item added via verify-step
     video_links: List[str] = Field(...)
     talk_description: str = Field(..., min_length=1)
     key_takeaways: str = Field(..., min_length=1)
     target_audiences: List[SpeakerTargetAudienceItem] = Field(..., min_length=1)  # array of audience objects from speakerTargetAudeince
+    # Optional fields editable after profile creation (not part of verify-step)
+    name_salutation: Optional[str] = Field(default=None, description="E.g. Mr, Dr., Mrs., Ms.")
+    bio: Optional[str] = Field(default=None, description="Speaker bio (text area)")
+    twitter: Optional[str] = Field(default=None, description="Twitter URL or handle")
+    facebook: Optional[str] = Field(default=None, description="Facebook URL")
+    address_city: Optional[str] = Field(default=None, description="City")
+    address_state: Optional[str] = Field(default=None, description="State/Region")
+    address_country: Optional[str] = Field(default=None, description="Country")
+    phone_country_code: Optional[str] = Field(default=None, description="Phone country code (e.g. +1, +44, +91)")
+    phone_number: Optional[str] = Field(default=None, description="Phone number (without country code)")
+    professional_memberships: Optional[str] = Field(default=None, description="Professional memberships or affiliations (text area)")
+    preferred_speaking_time: Optional[str] = Field(default=None, description="E.g. 10-, 20-, 30-, 40-minute or one hour")
+
+
+# --- PUT /speaker-profile/{profile_id} request (partial update; all fields optional) ---
+
+class SpeakerProfileUpdateSchema(BaseModel):
+    """Request body for PUT /speaker-profile/{profile_id}. All fields optional; only provided fields are updated."""
+    full_name: Optional[str] = Field(default=None, min_length=1)
+    email: Optional[str] = Field(default=None, min_length=1)
+    topics: Optional[List[SpeakerTopicItem]] = Field(default=None, min_length=1)
+    speaking_formats: Optional[List[str]] = Field(default=None)
+    delivery_mode: Optional[List[str]] = Field(default=None)
+    linkedin_url: Optional[str] = Field(default=None)
+    past_speaking_examples: Optional[List[str]] = Field(default=None)
+    video_links: Optional[List[str]] = Field(default=None)
+    talk_description: Optional[str] = Field(default=None, min_length=1)
+    key_takeaways: Optional[str] = Field(default=None, min_length=1)
+    target_audiences: Optional[List[SpeakerTargetAudienceItem]] = Field(default=None, min_length=1)
+    name_salutation: Optional[str] = None
+    bio: Optional[str] = None
+    twitter: Optional[str] = None
+    facebook: Optional[str] = None
+    address_city: Optional[str] = None
+    address_state: Optional[str] = None
+    address_country: Optional[str] = None
+    phone_country_code: Optional[str] = None
+    phone_number: Optional[str] = None
+    professional_memberships: Optional[str] = None
+    preferred_speaking_time: Optional[str] = None
+
+    class Config:
+        populate_by_name = True

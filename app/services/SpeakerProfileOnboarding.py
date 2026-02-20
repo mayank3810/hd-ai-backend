@@ -43,6 +43,12 @@ _YOUTUBE_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Vimeo video URL: vimeo.com/123, player.vimeo.com/video/123, vimeo.com/channels/.../123, vimeo.com/groups/.../videos/123
+_VIMEO_URL_PATTERN = re.compile(
+    r"^https?://(?:www\.)?(?:vimeo\.com/(?:\d+|channels/[^/]+/\d+|groups/[^/]+/videos/\d+)|player\.vimeo\.com/video/\d+)(?:\?[^\s]*)?$",
+    re.IGNORECASE,
+)
+
 
 def _is_valid_url(s: str) -> bool:
     if not s or not isinstance(s, str):
@@ -65,6 +71,19 @@ def _is_valid_youtube_url(s: str) -> bool:
         return False
     s = s.strip()
     return bool(_YOUTUBE_URL_PATTERN.match(s))
+
+
+def _is_valid_vimeo_url(s: str) -> bool:
+    """True only if URL is a Vimeo video (vimeo.com/123, player.vimeo.com/video/123, etc.)."""
+    if not s or not isinstance(s, str):
+        return False
+    s = s.strip()
+    return bool(_VIMEO_URL_PATTERN.match(s))
+
+
+def _is_valid_video_url(s: str) -> bool:
+    """True if URL is a valid YouTube or Vimeo video URL."""
+    return _is_valid_youtube_url(s) or _is_valid_vimeo_url(s)
 
 
 def _check_gibberish(text: str) -> bool:
@@ -221,10 +240,10 @@ def _validate_rule_based(
                 raw = " ".join(str(x).strip() for x in normalized_answer if str(x).strip())
                 normalized_answer = split_input(raw)
             if step.step_name == "video_links":
-                # video_links: only YouTube URLs; keep valid ones, INVALID only if none valid
-                valid = [u for u in normalized_answer if _is_valid_youtube_url(u)]
+                # video_links: YouTube or Vimeo URLs only; keep valid ones, INVALID only if none valid
+                valid = [u for u in normalized_answer if _is_valid_video_url(u)]
                 if not valid:
-                    return None, "Please enter at least one valid YouTube video URL (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...)."
+                    return None, "Please enter at least one valid YouTube or Vimeo video URL (e.g. https://www.youtube.com/watch?v=... or https://vimeo.com/...)."
                 return list(dict.fromkeys(valid)), None
             invalid_urls = [u for u in normalized_answer if not _is_valid_url(u)]
             if invalid_urls:
@@ -430,6 +449,41 @@ def _reason_code_from_rule_error(err: str) -> str:
     if "invalid value" in e or "allowed" in e:
         return "ENUM_INVALID"
     return "RULE_INVALID"
+
+
+def _validation_ai_full_name_extract(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Extract the person's full name from free-form text (e.g. 'My name is Manish Gautam' -> 'Manish Gautam')."""
+    prompt = f"""
+The user was asked for their full name. They replied: "{user_text}"
+
+Extract the person's full name only. Return it as normalized_value (e.g. "First Last").
+- If they wrote a sentence like "My name is Manish Gautam" or "I'm John Smith", extract and return only the name: "Manish Gautam" or "John Smith".
+- If they already wrote just their name (e.g. "Manish Gautam"), return that, normalized (e.g. "Manish Gautam").
+- Use standard capitalization (e.g. "Manish Gautam", not "MANISH GAUTAM").
+- If you cannot identify a real person's full name (at least first and last), return INVALID.
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "INVALID_FULL_NAME", "normalized_value": "Extracted Full Name" or null }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. When status is VALID, normalized_value must be the extracted full name string (e.g. \"John Smith\"). When INVALID, normalized_value must be null."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
+        status = obj.get("status")
+        normalized_value = obj.get("normalized_value")
+        if status == "VALID" and isinstance(normalized_value, str) and normalized_value.strip():
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": normalized_value.strip()}
+        return {"status": "INVALID", "reason_code": obj.get("reason_code") or "INVALID_FULL_NAME", "normalized_value": None}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
 
 
 def _validation_ai_full_name_check(client: OpenAI, name: str) -> Dict[str, Any]:
@@ -646,9 +700,14 @@ def validate_step(
     api_key = os.getenv("OPENAI_API_KEY")
     client = OpenAI(api_key=api_key) if api_key else None
 
-    # code_full_name: format check + optional AI check for gibberish/random
+    # code_full_name: extract name from free-form text (e.g. "My name is Manish Gautam") then format + gibberish check
     if step.validation_mode == "code_full_name":
         text = normalized if isinstance(normalized, str) else " ".join(normalized)
+        # When AI is available, extract the person's full name from sentences like "My name is Manish Gautam"
+        if client and text.strip():
+            extract_res = _validation_ai_full_name_extract(client, text)
+            if extract_res.get("status") == "VALID" and extract_res.get("normalized_value"):
+                text = extract_res["normalized_value"]
         if not validate_full_name(text):
             return {"status": "INVALID", "reason_code": "INVALID_FULL_NAME", "normalized_value": None}
         if client:
@@ -852,6 +911,9 @@ def validate_full_profile(
         value = profile_data.get(value_key)
         if not step_def.required and (value is None or value == [] or value == ""):
             continue
+        # past_speaking_examples is stored as list; join for textarea validation when validating full profile
+        if field_name == "past_speaking_examples" and isinstance(value, list):
+            value = ", ".join(str(v).strip() for v in value if v) if value else ""
         source = default_source
         if step_def.validation_mode == "topics_multiselect":
             source = "selection" if isinstance(value, list) and value and isinstance(value[0], dict) else "text"

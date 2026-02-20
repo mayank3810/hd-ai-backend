@@ -11,6 +11,7 @@ from app.models.SpeakerProfile import PROFILE_FIELDS
 from app.schemas.SpeakerProfile import (
     VerifyStepRequest,
     SpeakerProfileCreateSchema,
+    SpeakerProfileUpdateSchema,
 )
 from app.services.SpeakerProfileOnboarding import (
     get_init_response,
@@ -86,6 +87,41 @@ async def get_speaker_profile_by_id(
             status_code=400,
             detail={"data": None, "error": str(e), "success": False},
         )
+
+
+@router.put("/{profile_id}", response_model=ServerResponse)
+async def update_speaker_profile(
+    profile_id: str,
+    body: SpeakerProfileUpdateSchema,
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+):
+    """
+    Update a speaker profile. Only provided fields are updated.
+    Profile must belong to the current user (JWT). All profile fields from full_name to preferred_speaking_time can be updated.
+    """
+    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"data": None, "error": "User ID not found in token.", "success": False},
+        )
+    profile = await model.get_profile_by_id_and_user(profile_id, str(user_id))
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={"data": None, "error": "Profile not found.", "success": False},
+        )
+    updates = body.model_dump(exclude_unset=True, by_alias=True)
+    if not updates:
+        return Utils.create_response(profile, True)
+    updated = await model.update_profile(profile_id, updates)
+    if not updated:
+        raise HTTPException(
+            status_code=500,
+            detail={"data": None, "error": "Update failed.", "success": False},
+        )
+    return Utils.create_response(updated, True)
 
 
 @router.get("/{profile_id}/resume-onboarding")
@@ -293,9 +329,14 @@ async def verify_step(
         if body.step not in completed:
             completed.append(body.step)
         await model.append_conversation(profile_id, agent_message_for_step, normalized)
+        # past_speaking_examples is stored as array; store the user's answer as [normalized]
+        if body.step == "past_speaking_examples":
+            step_updates = {body.step: [normalized]}
+        else:
+            step_updates = {body.step: normalized}
         await model.update_step(
             body.profile_id,
-            updates={body.step: normalized},
+            updates=step_updates,
             next_step_name=next_step_name,
             completed_steps=completed,
             last_assistant_message=assistant_message,
