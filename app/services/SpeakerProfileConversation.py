@@ -62,18 +62,49 @@ def _fallback_recovery(
 
     variants = []
     if reason_code in ("EMPTY", "REQUIRED"):
-        variants = [
-            f"I didn't catch that—could you share? {q}",
-            f"Could you share that with me? {q}",
-            f"Just to make sure I understand—{q}",
-        ]
+        if step.step_name == "topics":
+            variants = [
+                "Topics help us match you to opportunities. Could you pick one or more from the list?",
+                "Picking a topic helps your profile—choose one or more from the list when you're ready!",
+            ]
+        elif step.step_name == "speaking_formats":
+            variants = [
+                "Speaking formats help event organizers find you. Could you pick one or more from the list?",
+                "Picking your formats helps your profile—choose from the list when you're ready!",
+            ]
+        elif step.step_name == "delivery_mode":
+            variants = [
+                "How you deliver helps us match you to the right events. Could you pick one or more from the list?",
+                "Picking delivery mode helps your profile—choose from the list when you're ready!",
+            ]
+        elif step.step_name == "talk_description":
+            variants = [
+                "A short description of your talk helps us match you to the right events. Could you share a bit about your talk or expertise?",
+                "Describing your talk helps your profile—share a few sentences when you're ready!",
+            ]
+        elif step.step_name == "key_takeaways":
+            variants = [
+                "Key takeaways help event organizers see what audiences get from your talk. Could you share a few?",
+                "Sharing key takeaways helps your profile—a few points for your audience when you're ready!",
+            ]
+        elif step.step_name == "target_audiences":
+            variants = [
+                "Target audiences help us match you to the right events. Could you pick one or more from the list?",
+                "Picking your audience helps your profile—choose one or more from the list when you're ready!",
+            ]
+        else:
+            variants = [
+                f"I didn't catch that—could you share? {q}",
+                f"Could you share that with me? {q}",
+                f"Just to make sure I understand—{q}",
+            ]
     elif reason_code == "MISSING_PROFILE_ID":
         variants = [
             "Let's start from the beginning—what is your full name?",
             "I don't have your profile yet. Could you tell me your full name first?",
         ]
     elif reason_code == "REFUSAL":
-        # Calm, short reply when user declines. Do not explain what we need it for or invite other questions.
+        # Calm, friendly reply when user declines. For topics, explain why it matters for their profile without demanding.
         if step.step_name == "full_name":
             variants = [
                 "No problem. When you're ready, share your full name and we can continue.",
@@ -83,6 +114,51 @@ def _fallback_recovery(
             variants = [
                 "No problem. When you're ready, share your email and we can continue.",
                 "That's okay. Whenever you're ready, share your email to continue.",
+            ]
+        elif step.step_name == "topics":
+            variants = [
+                "No pressure! Topics help us match you to opportunities. Whenever you're ready, pick one or more from the list.",
+                "That's okay! If you don't see yours, pick the closest match—we can refine later. Ready when you are!",
+            ]
+        elif step.step_name == "speaking_formats":
+            variants = [
+                "No pressure! Speaking formats help event organizers find you. Whenever you're ready, pick one or more from the list.",
+                "That's okay! Pick one or more formats from the list when you're ready—it helps your profile.",
+            ]
+        elif step.step_name == "delivery_mode":
+            variants = [
+                "No pressure! How you deliver helps us match you to events. Whenever you're ready, pick one or more from the list.",
+                "That's okay! Pick your delivery option(s) from the list when you're ready—it helps your profile.",
+            ]
+        elif step.step_name == "target_audiences":
+            variants = [
+                "No pressure! Target audiences help us match you to the right events. Whenever you're ready, pick one or more from the list.",
+                "That's okay! Picking your audience helps your profile—choose from the list when you're ready!",
+            ]
+        elif step.step_name == "linkedin_url":
+            variants = [
+                "No problem. You can skip this step—we'll move on.",
+                "That's okay. We'll continue without it.",
+            ]
+        elif step.step_name == "past_speaking_examples":
+            variants = [
+                "No problem. You can skip this step—we'll move on.",
+                "That's okay. We'll continue without it.",
+            ]
+        elif step.step_name == "video_links":
+            variants = [
+                "No problem. You can skip this step—we'll move on.",
+                "That's okay. We'll continue without it.",
+            ]
+        elif step.step_name == "talk_description":
+            variants = [
+                "No problem. When you're ready, share a bit about your talk and we can continue.",
+                "That's okay. Whenever you're ready, describe your talk or expertise and we'll move on.",
+            ]
+        elif step.step_name == "key_takeaways":
+            variants = [
+                "No problem. You can skip this step—we'll move on.",
+                "That's okay. We'll continue without it.",
             ]
         else:
             variants = [
@@ -99,24 +175,66 @@ def _fallback_recovery(
             "Please enter a valid email address (e.g. name@example.com).",
         ]
     elif reason_code in ("INVALID_URL",):
-        variants = [
-            "That link doesn't look quite right. Could you paste the full URL (including https://)?",
-            "Could you share a valid URL? It should start with https://",
-            "I’m having trouble with that link—can you paste the full URL?",
-        ]
+        if step.step_name == "linkedin_url":
+            variants = [
+                "That doesn't look like a LinkedIn profile link. Paste one like https://linkedin.com/in/yourprofile, or you can skip this step.",
+                "We need a LinkedIn profile URL (linkedin.com/in/...) or you can skip. Your choice!",
+            ]
+        else:
+            variants = [
+                "That link doesn't look quite right. Could you paste the full URL (including https://)?",
+                "Could you share a valid URL? It should start with https://",
+                "I’m having trouble with that link—can you paste the full URL?",
+            ]
     elif reason_code in ("ENUM_NO_MATCH", "ENUM_INVALID"):
-        if allowed:
+        if step.step_name == "topics" and allowed:
+            variants = [
+                "Topics help us match you to opportunities. Could you pick one or more from the list?",
+                "Picking a topic helps your profile—choose one or more from the list when you're ready!",
+            ]
+        elif step.step_name == "speaking_formats" and allowed:
+            variants = [
+                "Speaking formats help event organizers find you. Could you pick one or more from the list?",
+                "Picking your formats helps your profile—choose from the list when you're ready!",
+            ]
+        elif step.step_name == "delivery_mode" and allowed:
+            variants = [
+                "How you deliver helps us match you to the right events. Could you pick one or more from the list?",
+                "Picking delivery mode helps your profile—choose from the list when you're ready!",
+            ]
+        elif step.step_name == "target_audiences" and allowed:
+            variants = [
+                "Target audiences help us match you to the right events. Could you pick one or more from the list?",
+                "Picking your audience helps your profile—choose from the list when you're ready!",
+            ]
+        elif allowed:
             display_str = ", ".join(str(a) for a in allowed)
             variants = [
-                f"I didn’t quite catch that—could you choose from: {display_str}?",
+                f"I didn't quite catch that—could you choose from: {display_str}?",
                 f"Which option fits best? Pick from: {display_str}.",
                 f"To keep things consistent, please choose from: {display_str}.",
             ]
         else:
             variants = [
-                "I didn’t quite catch that—could you try again?",
+                "I didn't quite catch that—could you try again?",
                 "Could you rephrase that for me?",
                 "Can you share that again in a bit more detail?",
+            ]
+    elif reason_code == "GIBBERISH" and step.step_name == "video_links":
+        variants = [
+            "That doesn't look like a video link. Paste a YouTube or Vimeo URL, or you can skip this step.",
+            "We need a speaking video link (YouTube or Vimeo) or you can skip. Your choice!",
+        ]
+    elif reason_code in ("GIBBERISH", "UNRELATED") and step.step_name in ("talk_description", "key_takeaways"):
+        if step.step_name == "talk_description":
+            variants = [
+                "A short description helps us match you to the right events. Could you share a bit about your talk or expertise?",
+                "Describing your talk helps your profile—share a few sentences when you're ready!",
+            ]
+        else:
+            variants = [
+                "Key takeaways help organizers see what audiences get. Could you share a few points?",
+                "Sharing key takeaways helps your profile—a few points when you're ready!",
             ]
     else:
         # IRRELEVANT / GIBBERISH / SPAM / LOW_EFFORT / UNKNOWN
@@ -291,6 +409,10 @@ def generate_recovery_message(
     if not api_key:
         return _fallback_recovery(step, reason_code, retry_count, allowed_values)
 
+    # For REFUSAL on these steps use fallback only—avoids AI mixing up steps or suggesting alternatives (e.g. 'topics' for wrong step, 'phone number' for email)
+    if reason_code == "REFUSAL" and step_name in ("full_name", "email", "talk_description", "key_takeaways", "delivery_mode", "topics", "speaking_formats", "target_audiences"):
+        return _fallback_recovery(step, reason_code, retry_count, allowed_values)
+
     seed = _stable_seed(step_name, str(user_answer), reason_code, str(retry_count))
     client = OpenAI(api_key=api_key)
     allowed = allowed_values if allowed_values is not None else (step.allowed_values or None)
@@ -312,13 +434,22 @@ def generate_recovery_message(
         "reason_code": reason_code,
         "retry_count": retry_count,
         "requirements": [
-            "Write ONE short assistant message asking the user to try again.",
+            "Write ONE very short assistant message (1–2 short sentences only; under 25 words). No long paragraphs.",
             "Tone: friendly and conversational (like the Speaker Pitcher sample). Assume good intent; do not mention validation or grammar.",
             "Do not mention grammar, spelling, or 'validation'.",
-            "Do NOT explain what we need the field for. Do NOT offer to answer other questions or invite the user to ask (e.g. no 'just ask!', no 'I can explain what you need it for'). Your only job is to get the information for the speaker profile—re-ask for the requested field only.",
+            "Never use demanding or bureaucratic language: no 'This is a required field', 'We need it from you', 'You must provide', or similar.",
+            "Do NOT suggest alternatives (e.g. phone number, other contact methods). Only re-ask for the same field; never offer a different field or option.",
+            "CRITICAL—match the CURRENT step_name only. Do NOT mention 'topics' or 'pick a topic' or 'Sharing topics' unless step_name is exactly 'topics'. For delivery_mode say 'delivery' or 'how you deliver', never 'topics'. For target_audiences say 'target audiences' or 'who your audience is', never 'topics'. For talk_description or key_takeaways there is NO list—ask for a description or key takeaways in their own words; never say 'pick from the list' or 'topic'.",
+            "When step_name is 'topics': brief line on why topics help match them to opportunities, then ask to pick from the list.",
+            "When step_name is 'speaking_formats': brief line on why formats help (event organizers find them), then ask to pick from the list (e.g. Keynote, Panel, etc.). Do not say 'topics'.",
+            "When step_name is 'delivery_mode': brief line on why delivery helps (match to events), then ask to choose from the options (In-Person, Virtual, Hybrid). Do not say 'topics' or 'Sharing topics'.",
+            "When step_name is 'talk_description': brief line on why describing their talk helps (match to right events), then ask to share a description of their talk or expertise in their own words. No list, no topics.",
+            "When step_name is 'key_takeaways': brief line on why key takeaways help, then ask to share a few points for their audience. No list, no topics.",
+            "When step_name is 'target_audiences': brief line on why target audiences help (match to right events), then ask to pick from the list. Do not say 'topics'.",
+            "For other steps, re-ask in a friendly way in 1–2 short sentences, matching that step only.",
             "Focus on intent, not length or picking all options.",
             "Vary phrasing compared to prior attempts (retry_count).",
-            "If retry_count > 1, escalate help by giving an example or offering the allowed options (if provided).",
+            "If retry_count > 1, add one short hint that fits the step (e.g. 'pick from the list' only for steps that have a list: topics, speaking_formats, delivery_mode, target_audiences). For talk_description/key_takeaways, hint 'share a few sentences' or similar, not 'list'.",
             "Do not repeat the exact same wording across retries.",
         ],
         "variation_seed": seed,
@@ -330,7 +461,7 @@ def generate_recovery_message(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a friendly conversational assistant. Match the same warm, conversational tone as the rest of the flow. Return ONLY the assistant message text. No JSON.",
+                    "content": "You are a friendly conversational assistant. Keep every message SHORT: 1–2 short sentences only (under 25 words). No long paragraphs. Return ONLY the assistant message text. No JSON.",
                 },
                 {"role": "user", "content": str(payload)},
             ],

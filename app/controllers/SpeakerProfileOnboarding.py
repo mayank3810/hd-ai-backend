@@ -302,6 +302,15 @@ async def verify_step(
 
     logger.info("verify-step: branch=success")
     normalized = result.get("normalized_value")
+    # When optional step is skipped (normalized is None), use user's typed answer for conversation and response; profile field stays null/empty
+    if normalized is None and body.answer is not None and body.step in ("linkedin_url", "past_speaking_examples", "video_links", "key_takeaways"):
+        user_answer_str = (
+            body.answer if isinstance(body.answer, str) else " ".join(str(x).strip() for x in body.answer if x)
+        )
+        display_value = user_answer_str.strip() or None
+    else:
+        display_value = normalized
+
     next_step_def = get_next_step(body.step)
     next_step_name = next_step_def.step_name if next_step_def else None
     is_last = is_last_step(body.step)
@@ -310,7 +319,7 @@ async def verify_step(
         next_step_payload = {}
     assistant_message = generate_transition_message(
         step_name=body.step,
-        normalized_answer=normalized,
+        normalized_answer=display_value,
         next_step=next_step_payload,
         is_last_step=is_last,
     )
@@ -330,10 +339,12 @@ async def verify_step(
         completed = list(profile.get("completed_steps") or [])
         if body.step not in completed:
             completed.append(body.step)
-        await model.append_conversation(profile_id, agent_message_for_step, normalized)
-        # past_speaking_examples is stored as array; store the user's answer as [normalized]
+        await model.append_conversation(profile_id, agent_message_for_step, display_value)
+        # past_speaking_examples and video_links are stored as arrays; when skipped (normalized None) store []
         if body.step == "past_speaking_examples":
-            step_updates = {body.step: [normalized]}
+            step_updates = {body.step: [normalized] if normalized is not None else []}
+        elif body.step == "video_links":
+            step_updates = {body.step: normalized if normalized is not None else []}
         else:
             step_updates = {body.step: normalized}
         await model.update_step(
@@ -365,7 +376,7 @@ async def verify_step(
 
     return {
         "assistant_message": assistant_message,
-        "normalized_answer": normalized,
+        "normalized_answer": display_value,
         "next_step": next_step_payload,
         "is_last_step": is_last,
         "profile_id": profile_id,

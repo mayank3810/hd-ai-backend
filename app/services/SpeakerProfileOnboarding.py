@@ -36,6 +36,11 @@ _LINKEDIN_URL_PATTERN = re.compile(
     r"^https?://(www\.)?linkedin\.com/in/[\w\-]+/?(\?\S*)?$",
     re.IGNORECASE,
 )
+# Find a LinkedIn URL inside free-form text (for extraction)
+_LINKEDIN_URL_SEARCH_PATTERN = re.compile(
+    r"https?://(www\.)?linkedin\.com/in/[\w\-]+/?(\?\S*)?",
+    re.IGNORECASE,
+)
 
 # YouTube video URL: youtube.com/watch, youtu.be/, youtube.com/embed/, youtube.com/v/, supports query params
 _YOUTUBE_URL_PATTERN = re.compile(
@@ -197,7 +202,8 @@ def _validate_basic(
         answer = answer.strip()
         if step.required and not answer:
             return None, "This field is required."
-        if step.min_length and len(answer) < step.min_length:
+        # Only enforce min_length when step is required; optional steps need short refusal text (e.g. "I do not have any") to reach refusal detection
+        if step.required and step.min_length and len(answer) < step.min_length:
             return None, f"Input must be at least {step.min_length} characters."
         if step.max_length and len(answer) > step.max_length:
             return None, f"Input must be no more than {step.max_length} characters."
@@ -456,13 +462,13 @@ def _validation_ai_full_name_extract(client: OpenAI, user_text: str) -> Dict[str
     prompt = f"""
 The user was asked for their full name. They replied: "{user_text}"
 
-Extract the person's full name only. Return it as normalized_value (e.g. "First Last").
+Extract the person's full name based on user intent. Return it as normalized_value with standard capitalization (e.g. "First Last").
 - If they wrote a sentence like "My name is Manish Gautam" or "I'm John Smith", extract and return only the name: "Manish Gautam" or "John Smith".
-- If they already wrote just their name (e.g. "Manish Gautam"), return that, normalized (e.g. "Manish Gautam").
-- Use standard capitalization (e.g. "Manish Gautam", not "MANISH GAUTAM").
+- If they already wrote just their name in any capitalization (e.g. "Mike tyson", "mike tyson", "MANISH GAUTAM"), accept it and return it normalized to "First Last" (e.g. "Mike Tyson", "Manish Gautam"). Do NOT reject based on capitalization—users may type however they want; check intent, not formatting.
+- In normalized_value always use standard capitalization (first letter of each name part) for storage.
 - If the user declines to share their name (e.g. "I don't want to share", "I prefer not to say", "I'd rather not"), return INVALID with reason_code "REFUSAL".
 - If you cannot identify a real person's full name (at least first and last), return INVALID with reason_code "INVALID_FULL_NAME".
-- If the reply has one plausible first name but the rest is clearly not a real name (e.g. random letters, keyboard smash like "Akash ksdgjsdgrwgb"), return INVALID with reason_code "INVALID_FULL_NAME". Both first and last must look like real names.
+- If the reply has one plausible first name but the rest is clearly not a real name (e.g. random letters, keyboard smash like "Akash ksdgjsdgrwgb"), return INVALID with reason_code "INVALID_FULL_NAME". Both first and last must look like real names. Reject only on intent (gibberish/refusal), never on capitalization or typing style.
 
 Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "REFUSAL" | "INVALID_FULL_NAME", "normalized_value": "Extracted Full Name" or null }}
 """
@@ -470,7 +476,7 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "REFUS
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Return ONLY JSON. When status is VALID, normalized_value must be the extracted full name (first and last, both real-looking). When INVALID, use reason_code REFUSAL if user declined to share, else INVALID_FULL_NAME. normalized_value must be null when INVALID."},
+                {"role": "system", "content": "Return ONLY JSON. Judge user intent: accept any capitalization (e.g. Mike tyson, mike tyson). When status is VALID, normalized_value must be the extracted full name with standard capitalization (First Last). Reject only for REFUSAL or when both first and last are not real-looking names (gibberish). When INVALID, use reason_code REFUSAL if user declined, else INVALID_FULL_NAME. normalized_value must be null when INVALID."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -524,6 +530,130 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "REFUS
         return {"status": "INVALID", "reason_code": reason if reason in ("REFUSAL", "INVALID_EMAIL") else "INVALID_EMAIL", "normalized_value": None}
     except Exception:
         return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
+
+
+def _validation_ai_linkedin_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect if user is declining to share or doesn't have LinkedIn. Returns REFUSAL to allow skip; INVALID if they seem to be providing a URL or gibberish."""
+    prompt = f"""
+The user was asked for their LinkedIn profile URL. They replied: "{user_text}"
+
+Decide if they are declining or don't have one (e.g. "I don't have LinkedIn", "I prefer not to share", "I don't use LinkedIn", "skip", "none") or if they are trying to provide a URL / something else.
+- If they clearly decline to share or say they don't have a LinkedIn profile, return status "VALID" with "refusal": true (so we allow them to skip).
+- If they provided a URL (even malformed) or the message is unclear/gibberish, return status "INVALID" with reason_code "INVALID_URL".
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "INVALID_URL", "refusal": true only when status is VALID and they declined }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. If user declines or doesn't have LinkedIn, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they gave a URL or gibberish, return {\"status\": \"INVALID\", \"reason_code\": \"INVALID_URL\"}. No other fields."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
+        if obj.get("status") == "VALID" and obj.get("refusal") is True:
+            return {"status": "VALID", "reason_code": "REFUSAL", "refusal": True}
+        return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
+
+
+def _validation_ai_past_speaking_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect if user is declining or has no past examples. Returns refusal=True to allow skip."""
+    prompt = f"""
+The user was asked for past speaking examples or events. They replied: "{user_text}"
+
+Decide if they are declining or have none (e.g. "I don't have any", "I prefer not to share", "skip", "none", "no examples yet") or if they are providing actual examples/events.
+- If they clearly decline or say they have no past examples, return status "VALID" with "refusal": true.
+- If they are providing examples or events (even brief), return status "INVALID" with reason_code "EMPTY" (we will accept and validate the content separately).
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "EMPTY", "refusal": true only when status is VALID and they declined or have none }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. If user declines or has no examples, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they provided examples/events, return {\"status\": \"INVALID\", \"reason_code\": \"EMPTY\"}. No other fields."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+        if obj.get("status") == "VALID" and obj.get("refusal") is True:
+            return {"status": "VALID", "reason_code": "REFUSAL", "refusal": True}
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+
+
+def _validation_ai_video_links_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect if user is declining or has no video links. Returns refusal=True to allow skip."""
+    prompt = f"""
+The user was asked for links to their speaking videos. They replied: "{user_text}"
+
+Decide if they are declining or have none (e.g. "I don't have any", "I prefer not to share", "skip", "none", "no videos yet") or if they are providing actual video URLs.
+- If they clearly decline or say they have no video links, return status "VALID" with "refusal": true.
+- If they are providing URL(s) or something that looks like a link, return status "INVALID" with reason_code "INVALID_URL".
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "INVALID_URL", "refusal": true only when status is VALID and they declined or have none }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. If user declines or has no videos, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they provided URL(s), return {\"status\": \"INVALID\", \"reason_code\": \"INVALID_URL\"}. No other fields."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
+        if obj.get("status") == "VALID" and obj.get("refusal") is True:
+            return {"status": "VALID", "reason_code": "REFUSAL", "refusal": True}
+        return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
+
+
+def _validation_ai_key_takeaways_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect if user is declining or has no key takeaways. Returns refusal=True to allow skip."""
+    prompt = f"""
+The user was asked for key takeaways for their audience. They replied: "{user_text}"
+
+Decide if they are declining or have none (e.g. "I don't have any", "I prefer not to share", "skip", "none", "no takeaways yet") or if they are providing actual key takeaways.
+- If they clearly decline or say they have no key takeaways, return status "VALID" with "refusal": true.
+- If they are providing key takeaways or points, return status "INVALID" with reason_code "EMPTY".
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "EMPTY", "refusal": true only when status is VALID and they declined or have none }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. If user declines or has no takeaways, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they provided takeaways, return {\"status\": \"INVALID\", \"reason_code\": \"EMPTY\"}. No other fields."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+        if obj.get("status") == "VALID" and obj.get("refusal") is True:
+            return {"status": "VALID", "reason_code": "REFUSAL", "refusal": True}
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
 
 
 def _validation_ai_full_name_check(client: OpenAI, name: str) -> Dict[str, Any]:
@@ -775,6 +905,37 @@ def validate_step(
             return {"status": "VALID", "reason_code": "OK", "normalized_value": text.strip().lower()}
         return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
 
+    # linkedin_url: optional; empty or refusal -> skip (VALID None). If they provide a URL, validate format and LinkedIn-only.
+    if step.step_name == "linkedin_url" and step.validation_mode == "url_only":
+        text = (normalized if isinstance(normalized, str) else "").strip()
+        if not text:
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+        # Extract LinkedIn URL from text if present (e.g. "here is my linkedin https://linkedin.com/in/foo")
+        linkedin_match = _LINKEDIN_URL_SEARCH_PATTERN.search(text)
+        if linkedin_match:
+            extracted = linkedin_match.group(0).strip()
+            if _is_valid_linkedin_url(extracted):
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": extracted}
+            return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
+        if _is_valid_linkedin_url(text):
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": text}
+        # Text contains something that looks like a URL but isn't valid LinkedIn (e.g. youtube link)
+        if "http" in text.lower() or "www." in text.lower() or ".com" in text.lower():
+            return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
+        # Not a URL: maybe refusal ("I don't have", "don't want to share", etc.)
+        if client:
+            ai_res = _validation_ai_linkedin_refusal(client, text)
+            if ai_res.get("refusal") is True:
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+        refusal_phrases = [
+            "don't have", "don't want", "prefer not", "skip", "no linkedin", "rather not",
+            "don't have one", "do not have", "without linkedin", "don't use linkedin",
+            "not on linkedin", "i don't have", "no profile",
+        ]
+        if any(p in text.lower() for p in refusal_phrases):
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+        return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
+
     # topics_multiselect: allowed values from DB (allowed_topics_for_step)
     if step.validation_mode == "topics_multiselect" and allowed_topics_for_step is not None:
         if source == "selection":
@@ -850,6 +1011,40 @@ def validate_step(
             ai_res = _validation_ai_enum_intent_target_audiences(client, step, text, allowed_target_audiences_for_step)
             return ai_res
 
+    # video_links is optional: empty or refusal -> skip (VALID None); still validate YouTube/Vimeo when they provide URLs
+    if step.step_name == "video_links" and step.validation_mode == "url_only":
+        text = (
+            normalized[0] if isinstance(normalized, list) and len(normalized) == 1 and isinstance(normalized[0], str)
+            else (normalized if isinstance(normalized, str) else " ".join(str(x).strip() for x in normalized if str(x).strip()))
+        )
+        if isinstance(text, list):
+            text = " ".join(str(x).strip() for x in text if str(x).strip())
+        text = (text or "").strip()
+        if not text:
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+        # If it looks like URL(s), let _validate_rule_based validate; otherwise check refusal
+        if "http" in text.lower() or "youtube" in text.lower() or "youtu.be" in text.lower() or "vimeo" in text.lower():
+            pass  # fall through to _validate_rule_based
+        else:
+            # Reject gibberish/random text (same idea as linkedin_url): code check first, then AI
+            if _check_gibberish(text):
+                return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
+            refusal_phrases = [
+                "don't have", "don't have any", "do not have", "prefer not", "skip", "none", "no videos",
+                "don't want to share", "rather not", "nothing to share", "no links", "no video",
+                "not yet", "don't have any yet", "no speaking videos",
+            ]
+            if any(p in text.lower() for p in refusal_phrases):
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+            if client:
+                ai_gibberish = _validation_ai_gibberish_check(client, step, text)
+                if ai_gibberish.get("status") == "INVALID":
+                    return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
+                ai_res = _validation_ai_video_links_refusal(client, text)
+                if ai_res.get("refusal") is True:
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+            return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
+
     normalized, err = _validate_rule_based(step, normalized, source)
     if err:
         if step.validation_mode == "strict_enum_code" and source == "text" and step.allowed_values:
@@ -870,6 +1065,21 @@ def validate_step(
         text = normalized if isinstance(normalized, str) else " ".join(str(x).strip() for x in normalized if str(x).strip())
         if step.required and not text.strip():
             return {"status": "INVALID", "reason_code": "EMPTY", "normalized_value": None}
+        # past_speaking_examples is optional: empty or refusal -> skip (VALID None); still validate when they provide content
+        if step.step_name == "past_speaking_examples":
+            if not text.strip():
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+            refusal_phrases = [
+                "don't have", "don't have any", "do not have", "prefer not", "skip", "none", "no examples",
+                "don't want to share", "rather not", "nothing to share", "no past", "haven't done",
+                "not yet", "no speaking", "don't have any yet",
+            ]
+            if any(p in text.lower() for p in refusal_phrases):
+                return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+            if client:
+                ai_res = _validation_ai_past_speaking_refusal(client, text)
+                if ai_res.get("refusal") is True:
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
         if _check_gibberish(text):
             return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
         if client:
@@ -888,7 +1098,23 @@ def validate_step(
     try:
         if step.validation_mode == "semantic_text_ai":
             text = normalized if isinstance(normalized, str) else " ".join(normalized)
-            # Optional field: empty is valid
+            # key_takeaways is optional: empty or refusal -> skip (VALID None); handle before generic optional check
+            if step.step_name == "key_takeaways":
+                if not text.strip():
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                refusal_phrases = [
+                    "don't have", "don't have any", "do not have", "prefer not", "skip", "none", "no takeaways",
+                    "don't want to share", "rather not", "nothing to share", "no key takeaways", "not yet",
+                    "don't have any yet", "no points", "cannot share", "can not share", "i cannot", "no i cannot",
+                    "won't share", "will not share",
+                ]
+                if any(p in text.lower() for p in refusal_phrases):
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                if client:
+                    ai_res = _validation_ai_key_takeaways_refusal(client, text)
+                    if ai_res.get("refusal") is True:
+                        return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+            # Optional field: empty is valid (for other optional semantic steps)
             if not step.required and not text.strip():
                 out = [] if step.validation_type in ("array_of_strings", "array_of_urls") else ""
                 return {"status": "VALID", "reason_code": "OK", "normalized_value": out}
