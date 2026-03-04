@@ -54,6 +54,7 @@ def scrape_url(url: str) -> dict:
                 "name": data.get("name"),
                 "description": data.get("description"),
                 "urls": data.get("urls", []),
+                "ogUrl": data.get("ogUrl"),
             },
         }
     except requests.exceptions.RequestException as e:

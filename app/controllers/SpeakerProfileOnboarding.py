@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/speaker-profile", tags=["Speaker Profile Onboarding"])
 
 
-@router.get("", response_model=ServerResponse)
+@router.get("/get-speaker-profiles", response_model=ServerResponse)
 async def get_my_speaker_profiles(
     jwt_payload: dict = Depends(jwt_validator),
     model=Depends(get_speaker_profile_model),

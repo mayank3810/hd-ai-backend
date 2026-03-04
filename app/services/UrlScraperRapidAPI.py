@@ -10,6 +10,7 @@ from app.models.UrlCollection import UrlCollectionModel
 from app.models.Opportunity import OpportunityModel
 from app.helpers.RapidAPIScraper import scrape_url
 from app.helpers.SpeakingOpportunityExtractor import extract_speaking_opportunities
+from app.agents.EventDetailEnricherAgent import EventDetailEnricherAgent
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class UrlScraperRapidAPIService:
     def __init__(self):
         self.url_collection_model = UrlCollectionModel()
         self.opportunity_model = OpportunityModel()
+        self.enricher_agent = EventDetailEnricherAgent()
 
     async def create_url_scrape_job(self, url: str) -> str:
         """
@@ -68,6 +70,9 @@ class UrlScraperRapidAPIService:
             if not opportunities:
                 logger.info("Job %s completed with 0 opportunities", url_collection_id)
                 return
+
+            # 2b. Enrich opportunities with incomplete details (scrape each event link via RapidAPI, extract via LLM)
+            opportunities = self.enricher_agent.enrich_opportunities(opportunities)
 
             # 3. Add source url to each opportunity's metadata for traceability
             for opp in opportunities:

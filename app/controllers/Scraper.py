@@ -8,7 +8,7 @@ from app.dependencies import get_scraper_service
 router = APIRouter(prefix="/api/v1/scrapers", tags=["Scrapers"])
 
 
-@router.post("/", response_model=ServerResponse, status_code=201)
+@router.post("/create-scraper", response_model=ServerResponse, status_code=201)
 async def create_scraper(
     data: ScraperCreateSchema,
     service=Depends(get_scraper_service),
@@ -32,7 +32,7 @@ async def create_scraper(
         )
 
 
-@router.get("/", response_model=ServerResponse)
+@router.get("/get-all-scrapers", response_model=ServerResponse)
 async def list_scrapers(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -57,7 +57,7 @@ async def list_scrapers(
         )
 
 
-@router.get("/{scraper_id}", response_model=ServerResponse)
+@router.get("/get-scraper/{scraper_id}", response_model=ServerResponse)
 async def get_scraper(
     scraper_id: str,
     service=Depends(get_scraper_service),

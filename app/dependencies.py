@@ -36,6 +36,7 @@ _speaker_topics_model = None
 _speaker_target_audience_model = None
 _scraper_service = None
 _url_scraper_rapidapi_service = None
+_opportunity_service = None
 
 
 def get_auth_service():
@@ -98,8 +99,8 @@ def get_scraper_service():
     """Get singleton ScraperRapidAPIService instance (RapidAPI scraper + LLM)."""
     global _scraper_service
     if _scraper_service is None:
-        from app.services.ScraperRapidAPI import ScraperRapidAPIService
-        _scraper_service = ScraperRapidAPIService()
+        from app.services.Scraper import ScraperService
+        _scraper_service = ScraperService()
     return _scraper_service
 
 
@@ -110,6 +111,15 @@ def get_url_scraper_rapidapi_service():
         from app.services.UrlScraperRapidAPI import UrlScraperRapidAPIService
         _url_scraper_rapidapi_service = UrlScraperRapidAPIService()
     return _url_scraper_rapidapi_service
+
+
+def get_opportunity_service():
+    """Get singleton OpportunityService instance."""
+    global _opportunity_service
+    if _opportunity_service is None:
+        from app.services.Opportunity import OpportunityService
+        _opportunity_service = OpportunityService()
+    return _opportunity_service
 
 
 def cleanup_resources():
@@ -123,7 +133,7 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _scraper_service, _url_scraper_rapidapi_service
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _scraper_service, _url_scraper_rapidapi_service, _opportunity_service
 
     # Reset all services
     _auth_service = None
@@ -157,3 +167,4 @@ def cleanup_resources():
     _speaker_target_audience_model = None
     _scraper_service = None
     _url_scraper_rapidapi_service = None
+    _opportunity_service = None
