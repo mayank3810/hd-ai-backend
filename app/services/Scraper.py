@@ -1,120 +1,67 @@
-"""
-Service for crawling URLs, scraping content, and extracting Speaking Opportunities for Traders via LLM.
-"""
-import asyncio
 from datetime import datetime
-from typing import Optional
 from bson import ObjectId
-
 from app.models.Scraper import ScraperModel
-from app.helpers.Crawler import hybrid_crawl_logic_async
-from app.helpers.Scraper import WebsiteScraper
-from app.helpers.SpeakingOpportunityExtractor import extract_speaking_opportunities
+from app.schemas.Scraper import ScraperCreateSchema, ScraperUpdateSchema
 
 
 class ScraperService:
     def __init__(self):
-        self.model = ScraperModel()
-        self.scraper = WebsiteScraper()
+        self.scraper_model = ScraperModel()
 
-    async def create_crawl_job(
-        self,
-        url: str,
-        user_id: str,
-        max_depth: int = 1,
-        max_urls: int = 50,
-    ) -> str:
-        """
-        Create a pending scrape job and return its ID.
-        """
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        source_name = parsed.netloc or parsed.path or "unknown"
-
-        doc = {
-            "sourceName": source_name,
-            "url": url,
-            "description": None,
-            "userId": user_id,
-            "opportunities": [],
-            "status": "PENDING_SCRAPING",
-            "error": None,
-            "maxDepth": max_depth,
-            "maxUrls": max_urls,
-            "createdAt": datetime.utcnow(),
-            "updatedAt": None,
-        }
-        inserted_id = await self.model.create(doc)
-        return inserted_id
-
-    async def get_by_id(self, scraper_id: str, user_id: Optional[str] = None) -> Optional[dict]:
-        """Get a scrape job by ID."""
-        doc = await self.model.get_by_id(scraper_id, user_id)
-        if doc:
-            return doc.model_dump(by_alias=True, exclude_none=True)
-        return None
-
-    async def run_crawl_and_extract(self, job_id: str) -> None:
-        """
-        Background task: crawl URL, scrape pages, extract opportunities via LLM, update DB.
-        """
+    async def create(self, user_id: str, data: ScraperCreateSchema) -> dict:
         try:
-            await self.model.update_by_id(job_id, {"status": "IN_PROGRESS", "error": None})
-
-            doc = await self.model.collection.find_one({"_id": ObjectId(job_id)})
-            if not doc:
-                await self.model.update_by_id(
-                    job_id,
-                    {"status": "FAILED", "error": "Job not found"},
-                )
-                return
-
-            url = doc.get("url")
-            max_depth = doc.get("maxDepth", 1)
-            max_urls = doc.get("maxUrls", 50)
-
-            # 1. Crawl to discover URLs
-            discovered_urls = await hybrid_crawl_logic_async(url, max_depth, max_urls)
-            if not discovered_urls:
-                discovered_urls = [url]
-
-            # 2. Scrape each URL and collect markdown
-            combined_markdown = []
-            for u in discovered_urls:
-                result = self.scraper.scrape_url(u)
-                if result.get("success") and result.get("data", {}).get("markdown"):
-                    combined_markdown.append(result["data"]["markdown"])
-
-            if not combined_markdown:
-                await self.model.update_by_id(
-                    job_id,
-                    {"status": "FAILED", "error": "No content could be scraped from any URL"},
-                )
-                return
-
-            full_content = "\n\n---\n\n".join(combined_markdown)
-
-            # 3. LLM extract opportunities
-            opportunities, llm_error = extract_speaking_opportunities(full_content)
-            error_to_store = llm_error if llm_error and not opportunities else None
-
-            # 4. Update DB with success (or partial success if LLM failed but we have scraped content)
-            await self.model.update_by_id(
-                job_id,
-                {
-                    "status": "SUCCESS",
-                    "opportunities": opportunities,
-                    "error": error_to_store,
-                    "scrapedUrlCount": len(discovered_urls),
-                },
-            )
+            payload = data.model_dump()
+            payload["userId"] = user_id
+            payload["createdAt"] = datetime.utcnow()
+            scraper_id = await self.scraper_model.create(payload)
+            created = await self.scraper_model.get_by_id(scraper_id, user_id)
+            return {"success": True, "data": created}
         except Exception as e:
-            err_msg = str(e)
-            try:
-                await self.model.update_by_id(
-                    job_id,
-                    {"status": "FAILED", "error": err_msg},
-                )
-            except Exception:
-                pass
-            print(f"[ScraperService] Job {job_id} failed: {err_msg}")
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def get_by_id(self, scraper_id: str, user_id: str) -> dict:
+        try:
+            scraper = await self.scraper_model.get_by_id(scraper_id, user_id)
+            if not scraper:
+                return {"success": False, "data": None, "error": "Scraper not found"}
+            return {"success": True, "data": scraper}
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def get_list(self, user_id: str, skip: int = 0, limit: int = 100) -> dict:
+        try:
+            items = await self.scraper_model.get_list(user_id, skip=skip, limit=limit)
+            total = await self.scraper_model.count(user_id)
+            return {
+                "success": True,
+                "data": {"scrapers": items, "total": total},
+            }
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def update(self, scraper_id: str, user_id: str, data: ScraperUpdateSchema) -> dict:
+        try:
+            existing = await self.scraper_model.get_by_id(scraper_id, user_id)
+            if not existing:
+                return {"success": False, "data": None, "error": "Scraper not found"}
+            update_dict = data.model_dump(exclude_unset=True)
+            if not update_dict:
+                return {"success": False, "data": None, "error": "No data provided for update"}
+            update_dict["updatedAt"] = datetime.utcnow()
+            updated = await self.scraper_model.update(scraper_id, user_id, update_dict)
+            if not updated:
+                return {"success": False, "data": None, "error": "Failed to update scraper"}
+            updated_doc = await self.scraper_model.get_by_id(scraper_id, user_id)
+            return {"success": True, "data": updated_doc}
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def delete(self, scraper_id: str, user_id: str) -> dict:
+        try:
+            existing = await self.scraper_model.get_by_id(scraper_id, user_id)
+            if not existing:
+                return {"success": False, "data": None, "error": "Scraper not found"}
+            await self.scraper_model.delete(scraper_id, user_id)
+            return {"success": True, "data": "Scraper deleted successfully"}
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}

@@ -5,12 +5,9 @@ from starlette.responses import RedirectResponse
 from app.helpers.Database import MongoDB
 from app.middleware.Cors import add_cors_middleware
 from app.middleware.GlobalErrorHandling import GlobalErrorHandlingMiddleware
-from app.controllers import Auth,Profile, Common, Listings,Operator,Pricelabs, Property,PricelabsAdmin, Export
+from app.controllers import Auth,Profile, Common
 from app.middleware.JWTVerification import jwt_validator
-from app.controllers import BookingAdmin, AirbnbAdmin, CompetitorProperty, CompetitorComparison, FilterPreset, DeploymentCues
-from app.models.Operator import OperatorModel
-from app.controllers import BookingAdmin, AirbnbAdmin, CompetitorProperty, CompetitorComparison, FilterPreset, ImageCaption
-from app.controllers import Booking, Airbnb, TemporaryCompetitor, CueProperties, OnboardingStatus, QueueStatus, AnalyticsCuesPreset, ExcelSchedule, SpeakerProfileOnboarding, SpeakerOptions, Scraper
+from app.controllers import SpeakerProfileOnboarding, SpeakerOptions, Scraper
 import logging
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -33,30 +30,6 @@ add_cors_middleware(app)
 app.include_router(Auth.router)
 app.include_router(Profile.router,dependencies=[Depends(jwt_validator)])
 app.include_router(Common.router,dependencies=[Depends(jwt_validator)])
-app.include_router(Listings.router)
-app.include_router(Pricelabs.router)
-app.include_router(Operator.router)
-app.include_router(Property.router)
-app.include_router(BookingAdmin.router)
-app.include_router(PricelabsAdmin.router)
-app.include_router(Export.router)
-app.include_router(AirbnbAdmin.router)
-app.include_router(CompetitorProperty.router)
-app.include_router(CompetitorComparison.router)
-app.include_router(FilterPreset.router)
-# app.include_router(BackgroundMapping.router)
-app.include_router(DeploymentCues.router)
-
-# app.include_router(BackgroundMapping.router)
-app.include_router(ImageCaption.router)
-app.include_router(Booking.router)
-app.include_router(Airbnb.router)
-app.include_router(TemporaryCompetitor.router)
-app.include_router(CueProperties.router)
-app.include_router(OnboardingStatus.router)
-app.include_router(QueueStatus.router)
-app.include_router(AnalyticsCuesPreset.router)
-app.include_router(ExcelSchedule.router)
 app.include_router(SpeakerProfileOnboarding.router)
 app.include_router(SpeakerOptions.router)
 app.include_router(Scraper.router, dependencies=[Depends(jwt_validator)])
