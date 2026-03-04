@@ -293,11 +293,11 @@ def get_speaker_target_audience_model():
 
 
 def get_scraper_service():
-    """Get singleton ScraperService instance"""
+    """Get singleton ScraperRapidAPIService instance (RapidAPI scraper + LLM)."""
     global _scraper_service
     if _scraper_service is None:
-        from app.services.Scraper import ScraperService
-        _scraper_service = ScraperService()
+        from app.services.ScraperRapidAPI import ScraperRapidAPIService
+        _scraper_service = ScraperRapidAPIService()
     return _scraper_service
 
 

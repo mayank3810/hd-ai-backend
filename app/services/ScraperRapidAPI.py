@@ -1,33 +1,30 @@
 """
-Service for crawling URLs, scraping content, and extracting Speaking Opportunities for Traders via LLM.
+Service for scraping URLs via RapidAPI AI Content Scraper and extracting
+Speaking Opportunities via LLM. Replaces crawl+scrape flow with single-URL scraping.
 """
-import asyncio
 from datetime import datetime
 from typing import Optional
 from bson import ObjectId
+from urllib.parse import urlparse
 
 from app.models.Scraper import ScraperModel
-from app.helpers.Crawler import hybrid_crawl_logic_async
-from app.helpers.Scraper import WebsiteScraper
+from app.helpers.RapidAPIScraper import scrape_url
 from app.helpers.SpeakingOpportunityExtractor import extract_speaking_opportunities
 
 
-class ScraperService:
+class ScraperRapidAPIService:
+    """
+    Uses RapidAPI AI Content Scraper to scrape a single URL, then extracts
+    speaking opportunities via LLM. Crawler and legacy Scraper are not used.
+    """
+
     def __init__(self):
         self.model = ScraperModel()
-        self.scraper = WebsiteScraper()
 
-    async def create_crawl_job(
-        self,
-        url: str,
-        user_id: str,
-        max_depth: int = 1,
-        max_urls: int = 50,
-    ) -> str:
+    async def create_scrape_job(self, url: str, user_id: str) -> str:
         """
         Create a pending scrape job and return its ID.
         """
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         source_name = parsed.netloc or parsed.path or "unknown"
 
@@ -39,8 +36,6 @@ class ScraperService:
             "opportunities": [],
             "status": "PENDING_SCRAPING",
             "error": None,
-            "maxDepth": max_depth,
-            "maxUrls": max_urls,
             "createdAt": datetime.utcnow(),
             "updatedAt": None,
         }
@@ -54,9 +49,9 @@ class ScraperService:
             return doc.model_dump(by_alias=True, exclude_none=True)
         return None
 
-    async def run_crawl_and_extract(self, job_id: str) -> None:
+    async def run_scrape_and_extract(self, job_id: str) -> None:
         """
-        Background task: crawl URL, scrape pages, extract opportunities via LLM, update DB.
+        Background task: scrape URL via RapidAPI, extract opportunities via LLM, update DB.
         """
         try:
             await self.model.update_by_id(job_id, {"status": "IN_PROGRESS", "error": None})
@@ -70,42 +65,46 @@ class ScraperService:
                 return
 
             url = doc.get("url")
-            max_depth = doc.get("maxDepth", 1)
-            max_urls = doc.get("maxUrls", 50)
 
-            # 1. Crawl to discover URLs
-            discovered_urls = await hybrid_crawl_logic_async(url, max_depth, max_urls)
-            if not discovered_urls:
-                discovered_urls = [url]
-
-            # 2. Scrape each URL and collect markdown
-            combined_markdown = []
-            for u in discovered_urls:
-                result = self.scraper.scrape_url(u)
-                if result.get("success") and result.get("data", {}).get("markdown"):
-                    combined_markdown.append(result["data"]["markdown"])
-
-            if not combined_markdown:
+            # 1. Scrape via RapidAPI AI Content Scraper
+            result = scrape_url(url)
+            if not result.get("success"):
                 await self.model.update_by_id(
                     job_id,
-                    {"status": "FAILED", "error": "No content could be scraped from any URL"},
+                    {"status": "FAILED", "error": result.get("error", "Scraping failed")},
                 )
                 return
 
-            full_content = "\n\n---\n\n".join(combined_markdown)
+            content = result.get("data", {}).get("content", "")
+            if not content:
+                await self.model.update_by_id(
+                    job_id,
+                    {"status": "FAILED", "error": "No content returned from scraper"},
+                )
+                return
 
-            # 3. LLM extract opportunities
-            opportunities, llm_error = extract_speaking_opportunities(full_content)
+            # Optionally store name/description from scraper response
+            name = result.get("data", {}).get("name")
+            description = result.get("data", {}).get("description")
+            update_payload = {}
+            if name:
+                update_payload["scrapedName"] = name
+            if description:
+                update_payload["scrapedDescription"] = description
+
+            # 2. LLM extract speaking opportunities
+            opportunities, llm_error = extract_speaking_opportunities(content)
             error_to_store = llm_error if llm_error and not opportunities else None
 
-            # 4. Update DB with success (or partial success if LLM failed but we have scraped content)
+            # 3. Update DB with success
             await self.model.update_by_id(
                 job_id,
                 {
                     "status": "SUCCESS",
                     "opportunities": opportunities,
                     "error": error_to_store,
-                    "scrapedUrlCount": len(discovered_urls),
+                    "scrapedUrlCount": 1,
+                    **update_payload,
                 },
             )
         except Exception as e:
@@ -117,4 +116,4 @@ class ScraperService:
                 )
             except Exception:
                 pass
-            print(f"[ScraperService] Job {job_id} failed: {err_msg}")
+            print(f"[ScraperRapidAPIService] Job {job_id} failed: {err_msg}")

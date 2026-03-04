@@ -47,3 +47,13 @@ class ScraperModel:
             {"_id": ObjectId(scraper_id), "userId": user_id}
         )
         return result.deleted_count > 0
+
+    async def update_by_id(self, scraper_id: str, update_data: dict) -> bool:
+        """Update by ID only (for background task updates)."""
+        from datetime import datetime
+        update_data.setdefault("updatedAt", datetime.utcnow())
+        result = await self.collection.update_one(
+            {"_id": ObjectId(scraper_id)},
+            {"$set": update_data},
+        )
+        return result.modified_count > 0
