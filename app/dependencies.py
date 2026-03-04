@@ -35,6 +35,7 @@ _speaker_profile_model = None
 _speaker_topics_model = None
 _speaker_target_audience_model = None
 _scraper_service = None
+_url_scraper_rapidapi_service = None
 
 
 def get_auth_service():
@@ -102,6 +103,15 @@ def get_scraper_service():
     return _scraper_service
 
 
+def get_url_scraper_rapidapi_service():
+    """Get singleton UrlScraperRapidAPIService instance (UrlCollection + Opportunities flow)."""
+    global _url_scraper_rapidapi_service
+    if _url_scraper_rapidapi_service is None:
+        from app.services.UrlScraperRapidAPI import UrlScraperRapidAPIService
+        _url_scraper_rapidapi_service = UrlScraperRapidAPIService()
+    return _url_scraper_rapidapi_service
+
+
 def cleanup_resources():
     """
     Cleanup all singleton resources. Call this on application shutdown.
@@ -113,7 +123,7 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _scraper_service
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _scraper_service, _url_scraper_rapidapi_service
 
     # Reset all services
     _auth_service = None
@@ -146,3 +156,4 @@ def cleanup_resources():
     _speaker_topics_model = None
     _speaker_target_audience_model = None
     _scraper_service = None
+    _url_scraper_rapidapi_service = None
