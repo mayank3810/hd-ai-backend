@@ -8,8 +8,8 @@ from bson import ObjectId
 from urllib.parse import urlparse
 
 from app.models.Scraper import ScraperModel
-from app.helpers.RapidAPIScraper import scrape_url
-from app.helpers.SpeakingOpportunityExtractor import extract_speaking_opportunities
+from app.helpers.RapidAPIScraper import RapidAPIScraper
+from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
 
 
 class ScraperRapidAPIService:
@@ -20,6 +20,8 @@ class ScraperRapidAPIService:
 
     def __init__(self):
         self.model = ScraperModel()
+        self.rapidapi_scraper = RapidAPIScraper()
+        self.opportunity_extractor = SpeakingOpportunityExtractor()
 
     async def create_scrape_job(self, url: str, user_id: str) -> str:
         """
@@ -67,7 +69,7 @@ class ScraperRapidAPIService:
             url = doc.get("url")
 
             # 1. Scrape via RapidAPI AI Content Scraper
-            result = scrape_url(url)
+            result = self.rapidapi_scraper.scrape(url)
             if not result.get("success"):
                 await self.model.update_by_id(
                     job_id,
@@ -93,7 +95,7 @@ class ScraperRapidAPIService:
                 update_payload["scrapedDescription"] = description
 
             # 2. LLM extract speaking opportunities
-            opportunities, llm_error = extract_speaking_opportunities(content)
+            opportunities, llm_error = self.opportunity_extractor.extract(content)
             error_to_store = llm_error if llm_error and not opportunities else None
 
             # 3. Update DB with success

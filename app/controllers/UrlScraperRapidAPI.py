@@ -7,6 +7,7 @@ from app.schemas.Opportunity import UrlScrapeCreateSchema
 from app.schemas.ServerResponse import ServerResponse
 from app.helpers.Utilities import Utils
 from app.dependencies import get_url_scraper_rapidapi_service
+from app.middleware.JWTVerification import jwt_validator
 
 router = APIRouter(prefix="/api/v1/url-scraper", tags=["URL Scraper (RapidAPI)"])
 
@@ -16,6 +17,7 @@ async def create_url_scrape(
     data: UrlScrapeCreateSchema,
     background_tasks: BackgroundTasks,
     service=Depends(get_url_scraper_rapidapi_service),
+    jwt_payload: dict = Depends(jwt_validator),
 ):
     """
     Submit a URL for scraping. Saves url+createdAt to UrlCollection immediately.
@@ -30,7 +32,8 @@ async def create_url_scrape(
                 detail={"data": None, "error": "URL is required", "success": False},
             )
 
-        url_collection_id = await service.create_url_scrape_job(url)
+        user_id = jwt_payload.get("id")
+        url_collection_id = await service.create_url_scrape_job(url, user_id=user_id)
         background_tasks.add_task(service.run_scrape_and_extract, url_collection_id, url)
 
         return Utils.create_response(

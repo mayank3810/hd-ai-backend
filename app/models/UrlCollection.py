@@ -4,7 +4,7 @@ import os
 
 
 class UrlCollectionModel:
-    """Model for UrlCollection - stores only url and createdAt."""
+    """Model for UrlCollection - stores url, createdAt, sourceName, description."""
 
     def __init__(self, db_name=os.getenv("DB_NAME"), collection_name="UrlCollections"):
         self.collection = MongoDB.get_database(db_name)[collection_name]
@@ -13,6 +13,47 @@ class UrlCollectionModel:
         result = await self.collection.insert_one(data)
         return str(result.inserted_id)
 
-    async def get_by_id(self, url_collection_id: str) -> dict | None:
-        doc = await self.collection.find_one({"_id": ObjectId(url_collection_id)})
+    async def get_by_id(self, url_collection_id: str, user_id: str = None) -> dict | None:
+        query = {"_id": ObjectId(url_collection_id)}
+        if user_id is not None:
+            query["userId"] = user_id
+        doc = await self.collection.find_one(query)
         return doc
+
+    async def update_by_id(self, url_collection_id: str, update_data: dict) -> bool:
+        """Update UrlCollection by ID. Returns True if modified."""
+        result = await self.collection.update_one(
+            {"_id": ObjectId(url_collection_id)},
+            {"$set": update_data},
+        )
+        return result.modified_count > 0
+
+    async def get_list(self, user_id: str = None, skip: int = 0, limit: int = 100, sort_by: dict = None) -> list[dict]:
+        """Get UrlCollection entries with pagination. Optionally filter by user_id."""
+        if sort_by is None:
+            sort_by = {"createdAt": -1}
+        query = {}
+        if user_id is not None:
+            query["userId"] = user_id
+        cursor = (
+            self.collection.find(query)
+            .sort(list(sort_by.items()))
+            .skip(skip)
+            .limit(limit)
+        )
+        return [doc async for doc in cursor]
+
+    async def count(self, user_id: str = None) -> int:
+        """Get total count. Optionally filter by user_id."""
+        query = {}
+        if user_id is not None:
+            query["userId"] = user_id
+        return await self.collection.count_documents(query)
+
+    async def delete_by_id(self, url_collection_id: str, user_id: str = None) -> bool:
+        """Delete by ID. Optionally require user_id match."""
+        query = {"_id": ObjectId(url_collection_id)}
+        if user_id is not None:
+            query["userId"] = user_id
+        result = await self.collection.delete_one(query)
+        return result.deleted_count > 0

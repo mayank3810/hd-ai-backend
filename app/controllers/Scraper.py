@@ -3,7 +3,7 @@ from app.schemas.Scraper import ScraperCreateSchema, ScraperUpdateSchema
 from app.schemas.ServerResponse import ServerResponse
 from app.helpers.Utilities import Utils
 from app.middleware.JWTVerification import jwt_validator
-from app.dependencies import get_scraper_service
+from app.dependencies import get_scraper_service, get_url_scraper_rapidapi_service
 
 router = APIRouter(prefix="/api/v1/scrapers", tags=["Scrapers"])
 
@@ -36,9 +36,10 @@ async def create_scraper(
 async def list_scrapers(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    service=Depends(get_scraper_service),
     jwt_payload: dict = Depends(jwt_validator),
+    service=Depends(get_url_scraper_rapidapi_service),
 ):
+    """List scrapers from UrlCollection (sourceName, description updated after RapidAPI scrape)."""
     try:
         user_id = jwt_payload["id"]
         result = await service.get_list(user_id, skip=skip, limit=limit)
@@ -60,9 +61,10 @@ async def list_scrapers(
 @router.get("/get-scraper/{scraper_id}", response_model=ServerResponse)
 async def get_scraper(
     scraper_id: str,
-    service=Depends(get_scraper_service),
     jwt_payload: dict = Depends(jwt_validator),
+    service=Depends(get_url_scraper_rapidapi_service),
 ):
+    """Get a single scraper from UrlCollection by ID."""
     try:
         user_id = jwt_payload["id"]
         result = await service.get_by_id(scraper_id, user_id)
@@ -109,9 +111,10 @@ async def update_scraper(
 @router.delete("/{scraper_id}", response_model=ServerResponse)
 async def delete_scraper(
     scraper_id: str,
-    service=Depends(get_scraper_service),
     jwt_payload: dict = Depends(jwt_validator),
+    service=Depends(get_url_scraper_rapidapi_service),
 ):
+    """Delete a scraper (UrlCollection entry) by ID."""
     try:
         user_id = jwt_payload["id"]
         result = await service.delete(scraper_id, user_id)
