@@ -83,10 +83,10 @@ class UrlScraperRapidAPIService:
         """Get a UrlCollection entry by ID."""
         return await self.url_collection_model.get_by_id(url_collection_id, user_id)
 
-    async def get_list(self, user_id: str, skip: int = 0, limit: int = 100) -> dict:
-        """Get list of UrlCollection entries (for get-all-scrapers)."""
-        items = await self.url_collection_model.get_list(user_id=user_id, skip=skip, limit=limit)
-        total = await self.url_collection_model.count(user_id=user_id)
+    async def get_list(self, skip: int = 0, limit: int = 100) -> dict:
+        """Get list of UrlCollection entries (for get-all-scrapers). No user filter."""
+        items = await self.url_collection_model.get_list(user_id=None, skip=skip, limit=limit)
+        total = await self.url_collection_model.count(user_id=None)
         return {"success": True, "data": {"scrapers": items, "total": total}}
 
     async def get_by_id(self, url_collection_id: str, user_id: str) -> dict:

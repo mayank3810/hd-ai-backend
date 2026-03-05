@@ -39,10 +39,9 @@ async def list_scrapers(
     jwt_payload: dict = Depends(jwt_validator),
     service=Depends(get_url_scraper_rapidapi_service),
 ):
-    """List scrapers from UrlCollection (sourceName, description updated after RapidAPI scrape)."""
+    """List all scrapers from UrlCollection (sourceName, description updated after RapidAPI scrape)."""
     try:
-        user_id = jwt_payload["id"]
-        result = await service.get_list(user_id, skip=skip, limit=limit)
+        result = await service.get_list(skip=skip, limit=limit)
         if not result["success"]:
             raise HTTPException(
                 status_code=400,
