@@ -105,9 +105,9 @@ class UrlScraperRapidAPIService:
             return {"success": False, "data": None, "error": "Scraper not found"}
         return {"success": True, "data": doc}
 
-    async def delete(self, url_collection_id: str, user_id: str) -> dict:
-        """Delete a UrlCollection entry by ID (for delete-scraper)."""
-        deleted = await self.url_collection_model.delete_by_id(url_collection_id, user_id)
+    async def delete(self, url_collection_id: str) -> dict:
+        """Delete a UrlCollection entry by ID (for delete-scraper). Deletion is by scraper_id only."""
+        deleted = await self.url_collection_model.delete_by_id(url_collection_id, user_id=None)
         if not deleted:
             return {"success": False, "data": None, "error": "Scraper not found"}
         return {"success": True, "data": "Scraper deleted successfully"}

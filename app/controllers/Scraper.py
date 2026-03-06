@@ -113,10 +113,9 @@ async def delete_scraper(
     jwt_payload: dict = Depends(jwt_validator),
     service=Depends(get_url_scraper_rapidapi_service),
 ):
-    """Delete a scraper (UrlCollection entry) by ID."""
+    """Delete a scraper (UrlCollection entry) by ID. Deletion is by scraper_id only."""
     try:
-        user_id = jwt_payload["id"]
-        result = await service.delete(scraper_id, user_id)
+        result = await service.delete(scraper_id)
         if not result["success"]:
             raise HTTPException(
                 status_code=404 if result["error"] == "Scraper not found" else 400,

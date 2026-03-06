@@ -74,7 +74,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup resources on shutdown"""
-    _tedx_scheduler.shutdown(wait=False)
+    # _tedx_scheduler.shutdown(wait=False)
     from app.dependencies import cleanup_resources
 
     cleanup_resources()
