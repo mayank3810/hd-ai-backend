@@ -14,21 +14,30 @@ from app.models.UrlCollection import UrlCollectionModel
 from app.models.Opportunity import OpportunityModel
 from app.helpers.RapidAPIScraper import RapidAPIScraper
 from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
+from app.helpers.SerpHelper import SerpHelper
 from app.agents.EventDetailEnricherAgent import EventDetailEnricherAgent
+
+RAPIDAPI_DELAY_SECONDS = 5
+TEDX_CRON_QUERY = "Ted X opportunities"
+TEDX_CRON_TOP_N = 5
 
 logger = logging.getLogger(__name__)
 
 DESCRIPTION_MAX_LENGTH = 500
 
 
-def _sync_scrape_extract_enrich(url: str) -> Optional[dict]:
+def _sync_scrape_extract_enrich(url: str, delay_seconds: float = 0) -> Optional[dict]:
     """
     Synchronous scrape + LLM extract + enrich. Runs in thread pool to avoid blocking event loop.
     Returns dict with keys: source_name, description, opportunities; or None on failure.
+
+    Args:
+        url: URL to scrape
+        delay_seconds: Optional delay before each RapidAPI call (e.g. 5 to avoid rate limits). Default 0.
     """
-    scraper = RapidAPIScraper()
+    scraper = RapidAPIScraper(delay_seconds=delay_seconds)
     extractor = SpeakingOpportunityExtractor()
-    enricher = EventDetailEnricherAgent()
+    enricher = EventDetailEnricherAgent(rapidapi_scraper=scraper)
 
     result = scraper.scrape(url)
     if not result.get("success"):
@@ -103,16 +112,23 @@ class UrlScraperRapidAPIService:
             return {"success": False, "data": None, "error": "Scraper not found"}
         return {"success": True, "data": "Scraper deleted successfully"}
 
-    async def run_scrape_and_extract(self, url_collection_id: str, url: str) -> None:
+    async def run_scrape_and_extract(
+        self, url_collection_id: str, url: str, delay_seconds: float = 0
+    ) -> None:
         """
         Background task: scrape URL via RapidAPI, extract opportunities via LLM,
         insert each opportunity as root-level doc in Opportunities collection.
         Blocking I/O runs in thread pool so it does not block other requests.
+
+        Args:
+            url_collection_id: UrlCollection document ID
+            url: URL to scrape
+            delay_seconds: Optional delay before each RapidAPI call (e.g. 5 for cron). Default 0.
         """
         logger.info("Background job started url_collection_id=%s url=%s", url_collection_id, url[:80])
         try:
             # Run blocking work (RapidAPI, OpenAI, enricher) in thread pool - prevents blocking event loop
-            parsed = await asyncio.to_thread(_sync_scrape_extract_enrich, url)
+            parsed = await asyncio.to_thread(_sync_scrape_extract_enrich, url, delay_seconds)
             if parsed is None:
                 logger.error("Job %s scrape/extract failed", url_collection_id)
                 return
@@ -141,3 +157,38 @@ class UrlScraperRapidAPIService:
             logger.info("Job %s completed: inserted %d opportunities into Opportunities collection", url_collection_id, len(inserted_ids))
         except Exception as e:
             logger.exception("Job %s failed: %s", url_collection_id, e)
+
+    async def _run_tedx_cron_async(self) -> None:
+        """
+        Cron job: Search Google for Ted X opportunities, take top 5 URLs,
+        and run the same scrape+extract+enrich flow as the API (with 5s delay between RapidAPI calls).
+        No user_id - runs as system job.
+        """
+        logger.info("TedX cron job started")
+        try:
+            serp = SerpHelper()
+            urls = serp.search(TEDX_CRON_QUERY)
+            top_urls = urls[:TEDX_CRON_TOP_N]
+            if not top_urls:
+                logger.warning("TedX cron: no URLs from SERP for query=%s", TEDX_CRON_QUERY)
+                return
+
+            logger.info("TedX cron: processing %d URLs with %ds delay between RapidAPI calls and between URLs", len(top_urls), RAPIDAPI_DELAY_SECONDS)
+            for i, url in enumerate(top_urls):
+                try:
+                    if i > 0:
+                        await asyncio.sleep(RAPIDAPI_DELAY_SECONDS)  # 5s between URLs
+                    url_collection_id = await self.create_url_scrape_job(url, user_id=None)
+                    await self.run_scrape_and_extract(url_collection_id, url, delay_seconds=RAPIDAPI_DELAY_SECONDS)
+                except Exception as e:
+                    logger.exception("TedX cron: failed for url=%s: %s", url[:80], e)
+            logger.info("TedX cron job completed")
+        except Exception as e:
+            logger.exception("TedX cron job failed: %s", e)
+
+    def run_tedx_daily_cron(self) -> None:
+        """
+        Synchronous entrypoint for APScheduler.
+        Runs TedX cron in a new event loop (scheduler runs in background thread).
+        """
+        asyncio.run(self._run_tedx_cron_async())

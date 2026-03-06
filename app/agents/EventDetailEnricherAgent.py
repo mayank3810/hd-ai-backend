@@ -49,8 +49,8 @@ Full content:
 
 Return a single JSON object with keys: event_name, location, topics, date, speaking_format, delivery_mode, target_audiences, metadata."""
 
-    def __init__(self):
-        self.rapidapi_scraper = RapidAPIScraper()
+    def __init__(self, rapidapi_scraper: RapidAPIScraper = None):
+        self.rapidapi_scraper = rapidapi_scraper or RapidAPIScraper()
 
     def _is_opportunity_incomplete(self, opp: Dict[str, Any]) -> bool:
         """Return True if opportunity needs enrichment (missing key details)."""
