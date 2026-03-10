@@ -33,3 +33,39 @@ class SpeakerTopicsModel:
                 "slug": doc.get("slug", ""),
             })
         return out
+
+    async def get_by_slug(self, slug: str) -> Optional[dict]:
+        """Return topic document by slug (case-insensitive)."""
+        if not slug or not isinstance(slug, str):
+            return None
+        doc = await self.collection.find_one({"slug": slug.strip().lower()})
+        if not doc:
+            return None
+        return {"_id": str(doc["_id"]), "name": doc.get("name", ""), "slug": doc.get("slug", "")}
+
+    async def get_by_name(self, name: str) -> Optional[dict]:
+        """Return topic document by exact name match (case-sensitive)."""
+        if not name or not isinstance(name, str):
+            return None
+        doc = await self.collection.find_one({"name": name.strip()})
+        if not doc:
+            return None
+        return {"_id": str(doc["_id"]), "name": doc.get("name", ""), "slug": doc.get("slug", "")}
+
+    async def get_many_by_names(self, names: List[str]) -> List[dict]:
+        """Return topic documents for names that exist (match by name or slug)."""
+        if not names:
+            return []
+        seen = set()
+        out = []
+        for n in names:
+            n = (n or "").strip()
+            if not n or n in seen:
+                continue
+            doc = await self.get_by_name(n)
+            if not doc:
+                doc = await self.get_by_slug(n.lower().replace(" ", "-").replace("&", "and"))
+            if doc:
+                seen.add(n)
+                out.append(doc)
+        return out

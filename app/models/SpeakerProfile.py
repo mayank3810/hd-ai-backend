@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 from app.helpers.Database import MongoDB
 from app.config.speaker_profile_steps import get_next_step
@@ -171,6 +172,15 @@ class SpeakerProfileModel:
             doc["_id"] = str(doc["_id"])
         return doc
 
+    async def get_profile_by_email(self, email: str) -> Optional[dict]:
+        """Return profile document by email (case-insensitive)."""
+        if not email or not isinstance(email, str):
+            return None
+        doc = await self.collection.find_one({"email": {"$regex": f"^{email.strip().lower()}$", "$options": "i"}})
+        if doc and "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
     async def get_profiles_by_user_id(self, user_id: str) -> List[dict]:
         """Return all speaker profiles for the given user_id, newest first."""
         cursor = self.collection.find({"user_id": user_id}).sort("createdAt", -1)
@@ -193,3 +203,46 @@ class SpeakerProfileModel:
         result = await self.collection.insert_one(doc)
         doc["_id"] = result.inserted_id
         return doc
+
+    def _sanitize_chatbot_profile_data(self, data: dict) -> dict:
+        """Keep only allowed profile fields; exclude conversation, completed_steps, last_assistant_message, current_step."""
+        exclude = {"conversation", "completed_steps", "last_assistant_message", "current_step"}
+        return {k: v for k, v in data.items() if k in PROFILE_FIELDS and k not in exclude}
+
+    async def create_chatbot_profile(self, profile_data: dict, user_id: Optional[str] = None) -> dict:
+        """
+        Create speaker profile from chatbot flow. No conversation, completed_steps, last_assistant_message, current_step.
+        profile_data must include at least email and full_name.
+        """
+        sanitized = self._sanitize_chatbot_profile_data(profile_data)
+        doc = {
+            **sanitized,
+            "user_id": user_id,
+            "createdAt": datetime.utcnow(),
+            "updatedAt": datetime.utcnow(),
+        }
+        result = await self.collection.insert_one(doc)
+        doc["_id"] = result.inserted_id
+        if isinstance(doc["_id"], ObjectId):
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    async def update_chatbot_profile(self, email: str, profile_data: dict) -> Optional[dict]:
+        """
+        Update speaker profile by email. Only allowed profile fields; excludes conversation, etc.
+        """
+        if not email or not isinstance(email, str):
+            return None
+        sanitized = self._sanitize_chatbot_profile_data(profile_data)
+        if not sanitized:
+            return await self.get_profile_by_email(email)
+        sanitized["updatedAt"] = datetime.utcnow()
+        result = await self.collection.find_one_and_update(
+            {"email": {"$regex": f"^{email.strip().lower()}$", "$options": "i"}},
+            {"$set": sanitized},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not result:
+            return None
+        result["_id"] = str(result["_id"])
+        return result
