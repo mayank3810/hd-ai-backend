@@ -14,6 +14,7 @@ from app.schemas.SpeakerProfile import (
     VerifyStepRequest,
     SpeakerProfileCreateSchema,
     SpeakerProfileUpdateSchema,
+    SpeakerProfileCreateFormSchema,
 )
 from app.services.SpeakerProfileOnboarding import (
     get_init_response,
@@ -124,6 +125,34 @@ async def update_speaker_profile(
             detail={"data": None, "error": "Update failed.", "success": False},
         )
     return Utils.create_response(updated, True)
+
+
+@router.post("/create-speaker-profile", response_model=ServerResponse, status_code=201)
+async def create_speaker_profile(
+    body: SpeakerProfileCreateFormSchema,
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+):
+    """
+    Create a new speaker profile in one shot using a form-style payload (no conversational AI / stepwise onboarding).
+    All fields are optional and behave like the edit-profile API; only provided fields are stored.
+    """
+    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"data": None, "error": "User ID not found in token.", "success": False},
+        )
+
+    profile_data = body.model_dump(exclude_unset=True, by_alias=True)
+    if not profile_data:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": "No data provided to create profile.", "success": False},
+        )
+
+    doc = await model.create_speaker_profile(str(user_id), profile_data)
+    return Utils.create_response({"id": str(doc["_id"]), "profile": doc}, True)
 
 
 @router.get("/{profile_id}/resume-onboarding")

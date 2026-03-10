@@ -27,18 +27,26 @@ SPEAKER_TOPICS_COLLECTION = "speakerTopics"
 SPEAKER_TARGET_AUDIENCE_COLLECTION = "speakerTargetAudeince"
 
 TOPICS = [
-    "Leadership",
-    "Entrepreneurship",
-    "Artificial Intelligence",
+    "AI",
+    "B2B",
+    "B2C",
+    "Communications",
+    "Customer Experience",
+    "Data Science",
+    "Developer",
+    "Education",
+    "EdTech",
+    "E-Commerce",
+    "Executive Leadership",
+    "Financial Services",
+    "Human Resources (HR)",
     "Marketing",
-    "Sales",
-    "Personal Development",
-    "Innovation",
-    "Diversity & Inclusion",
-    "Mental Health",
-    "Finance",
-    "Sustainability",
-    "Career Growth",
+    "Nonprofit",
+    "Public Relations (PR)",
+    "Retail",
+    "Technology",
+    "UX/UI",
+    "Women In Tech",
 ]
 
 TARGET_AUDIENCES = [
@@ -88,21 +96,21 @@ async def main():
     db = MongoDB.get_database(db_name)
 
     topics_coll = db[SPEAKER_TOPICS_COLLECTION]
-    audience_coll = db[SPEAKER_TARGET_AUDIENCE_COLLECTION]
+    # audience_coll = db[SPEAKER_TARGET_AUDIENCE_COLLECTION]
 
     topic_docs = build_documents(TOPICS)
-    audience_docs = build_documents(TARGET_AUDIENCES)
+    # audience_docs = build_documents(TARGET_AUDIENCES)
 
     await topics_coll.insert_many(topic_docs)
-    await audience_coll.insert_many(audience_docs)
+    # await audience_coll.insert_many(audience_docs)
 
     print("Inserted %d documents into %s" % (len(topic_docs), SPEAKER_TOPICS_COLLECTION))
     for d in topic_docs:
         print("  - %s -> slug: %s" % (d["name"], d["slug"]))
 
-    print("\nInserted %d documents into %s" % (len(audience_docs), SPEAKER_TARGET_AUDIENCE_COLLECTION))
-    for d in audience_docs:
-        print("  - %s -> slug: %s" % (d["name"], d["slug"]))
+    # print("\nInserted %d documents into %s" % (len(audience_docs), SPEAKER_TARGET_AUDIENCE_COLLECTION))
+    # for d in audience_docs:
+    #     print("  - %s -> slug: %s" % (d["name"], d["slug"]))
 
     if MongoDB.client:
         MongoDB.client.close()

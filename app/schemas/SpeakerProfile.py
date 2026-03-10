@@ -138,3 +138,34 @@ class SpeakerProfileUpdateSchema(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+# --- POST /speaker-profile/create-speaker-profile request (form-style create; all fields optional like update) ---
+
+class SpeakerProfileCreateFormSchema(BaseModel):
+    """Form-style payload for creating a new speaker profile without conversational onboarding."""
+    full_name: Optional[str] = Field(default=None, min_length=1)
+    email: Optional[str] = Field(default=None, min_length=1)
+    topics: Optional[List[SpeakerTopicItem]] = Field(default=None, min_length=1)
+    speaking_formats: Optional[List[str]] = Field(default=None)
+    delivery_mode: Optional[List[str]] = Field(default=None)
+    linkedin_url: Optional[str] = Field(default=None)
+    past_speaking_examples: Optional[List[str]] = Field(default=None)
+    video_links: Optional[List[str]] = Field(default=None)
+    talk_description: Optional[str] = Field(default=None, min_length=1)
+    key_takeaways: Optional[str] = Field(default=None, min_length=1)
+    target_audiences: Optional[List[SpeakerTargetAudienceItem]] = Field(default=None, min_length=1)
+    name_salutation: Optional[str] = None
+    bio: Optional[str] = None
+    twitter: Optional[str] = None
+    facebook: Optional[str] = None
+    address_city: Optional[str] = None
+    address_state: Optional[str] = None
+    address_country: Optional[str] = None
+    phone_country_code: Optional[str] = None
+    phone_number: Optional[str] = None
+    professional_memberships: Optional[List[str]] = None
+    preferred_speaking_time: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
