@@ -17,6 +17,7 @@ from app.config.speaker_profile_chatbot import (
     DELIVERY_MODE,
     TARGET_AUDIENCES,
     MANDATORY_FIELDS,
+    MANDATORY_FIELDS_DISPLAY,
     OPTIONAL_FIELDS,
     OPTIONAL_FIELDS_DISPLAY,
 )
@@ -190,6 +191,37 @@ class SpeakerProfileChatbotService:
                 merged[k] = v
         return merged
 
+    def _get_fields_to_add_message(self, profile: Optional[dict] = None) -> str:
+        """Return list of parameters user can add, as readable text."""
+        remaining_mandatory = []
+        for f in MANDATORY_FIELDS:
+            if f in ("full_name", "email"):
+                continue
+            if not profile or not bool(profile.get(f)):
+                remaining_mandatory.append(MANDATORY_FIELDS_DISPLAY.get(f, f))
+        optional_labels = [OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS]
+        parts = []
+        if remaining_mandatory:
+            parts.append("Required: " + ", ".join(remaining_mandatory))
+        if optional_labels:
+            parts.append("Optional: " + ", ".join(optional_labels))
+        return ". ".join(parts) if parts else "additional profile details"
+
+    def _all_mandatory_filled(self, profile: dict) -> bool:
+        """Check if all MANDATORY_FIELDS are filled in the profile."""
+        return all(bool(profile.get(f)) for f in MANDATORY_FIELDS)
+
+    async def _set_completed_if_mandatory_filled(
+        self, speaker_profile_id: str, profile: dict
+    ) -> Optional[dict]:
+        """If all mandatory fields are filled, set isCompleted=True on the profile. Returns updated profile or None."""
+        if not self._all_mandatory_filled(profile):
+            return None
+        return await self.profile_model.update_profile(
+            speaker_profile_id,
+            {"isCompleted": True},
+        )
+
     async def _execute_upsert(
         self,
         args: dict,
@@ -204,9 +236,16 @@ class SpeakerProfileChatbotService:
                 return {"action": "error", "profile": None}
             merged = self._merge_for_update(profile, profile_doc)
             if not merged:
-                return {"action": "updated", "profile": profile}
-            updates = dict(merged)
-            updated = await self.profile_model.update_profile(speaker_profile_id, updates)
+                updated = profile
+            else:
+                updates = dict(merged)
+                updated = await self.profile_model.update_profile(speaker_profile_id, updates)
+                if not updated:
+                    return {"action": "error", "profile": None}
+            # After every update: check mandatory fields; if all filled, set isCompleted=True
+            refreshed = await self._set_completed_if_mandatory_filled(speaker_profile_id, updated)
+            if refreshed:
+                updated = refreshed
             return {"action": "updated", "profile": updated}
         # Create
         email = (args.get("email") or "").strip().lower() or f"random-{uuid.uuid4().hex[:8]}@sample.com"
@@ -214,6 +253,12 @@ class SpeakerProfileChatbotService:
         profile_doc["email"] = email
         profile_doc["full_name"] = full_name
         created = await self.profile_model.create_chatbot_profile(profile_doc, user_id)
+        # After create: check mandatory fields; if all filled, set isCompleted=True
+        spid = str(created.get("_id", ""))
+        if spid:
+            refreshed = await self._set_completed_if_mandatory_filled(spid, created)
+            if refreshed:
+                created = refreshed
         return {"action": "created", "profile": created}
 
     async def process_chat(
@@ -286,7 +331,8 @@ class SpeakerProfileChatbotService:
                 "If neither name nor email found, omit both - backend will use synthetic. "
                 "Topics: " + ", ".join(TOPICS[:12]) + ". Formats: " + ", ".join(SPEAKING_FORMATS) + ". "
                 "Delivery: " + ", ".join(DELIVERY_MODE) + ". Audiences: " + ", ".join(TARGET_AUDIENCES[:10]) + ". "
-                "After creating, say something like 'Your profile has been created!' and ask what they'd like to add next."
+                "After creating, say something like 'Your profile has been created for [full_name] ([email])!' "
+                "Then ask what they'd like to add and list the parameters: " + self._get_fields_to_add_message(None) + ". Always include the name and email you used in the tool call."
             )
 
         tools = [_build_upsert_tool(speaker_profile_id)]
@@ -345,7 +391,13 @@ class SpeakerProfileChatbotService:
         if isinstance(last, dict) and last.get("role") == "assistant":
             assistant_content = (last.get("content") or "").strip()
         if not assistant_content or last.get("role") == "tool":
-            prompt = "Briefly tell the user what was done." if action == "created" else "Briefly tell the user what was updated."
+            if action == "created" and profile:
+                name = (profile.get("full_name") or "").strip() or "you"
+                email = (profile.get("email") or "").strip() or ""
+                fields_list = self._get_fields_to_add_message(profile)
+                prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + f". Ask what they'd like to add and list the parameters they can add: {fields_list}"
+            else:
+                prompt = "Briefly tell the user what was done." if action == "created" else "Briefly tell the user what was updated."
             try:
                 s = client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -357,7 +409,13 @@ class SpeakerProfileChatbotService:
             except Exception:
                 pass
             if not assistant_content:
-                assistant_content = "Your profile has been created!" if action == "created" else "Your profile has been updated."
+                if action == "created" and profile:
+                    name = (profile.get("full_name") or "").strip() or "you"
+                    email = (profile.get("email") or "").strip()
+                    fields_list = self._get_fields_to_add_message(profile)
+                    assistant_content = f"Your profile has been created for {name}" + (f" ({email})!" if email else "!") + f" What would you like to add? You can add: {fields_list}"
+                else:
+                    assistant_content = "Your profile has been created!" if action == "created" else "Your profile has been updated."
 
         # ChatSession: create if new, else append
         chunk = [{"role": "user", "content": message or ""}, {"role": "assistant", "content": assistant_content}]

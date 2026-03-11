@@ -89,6 +89,17 @@ OPTIONAL_FIELDS = [
     "preferred_speaking_time",
 ]
 
+# Human-readable labels for mandatory fields (used in user-facing messages)
+MANDATORY_FIELDS_DISPLAY = {
+    "full_name": "Full name",
+    "email": "Email",
+    "topics": "Topics",
+    "speaking_formats": "Speaking formats",
+    "delivery_mode": "Delivery mode",
+    "talk_description": "Talk description",
+    "target_audiences": "Target audiences",
+}
+
 # Human-readable labels for optional fields (used in LLM prompts / user-facing messages)
 OPTIONAL_FIELDS_DISPLAY = {
     "linkedin_url": "LinkedIn URL",
