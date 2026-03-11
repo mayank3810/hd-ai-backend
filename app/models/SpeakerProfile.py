@@ -211,8 +211,9 @@ class SpeakerProfileModel:
 
     async def create_chatbot_profile(self, profile_data: dict, user_id: Optional[str] = None) -> dict:
         """
-        Create speaker profile from chatbot flow. No conversation, completed_steps, last_assistant_message, current_step.
-        profile_data must include at least email and full_name.
+        Create speaker profile from chatbot flow. profile_data must include at least email.
+        Other fields (mandatory/optional) are added via updates as user provides them.
+        No conversation, completed_steps, last_assistant_message, current_step.
         """
         sanitized = self._sanitize_chatbot_profile_data(profile_data)
         doc = {

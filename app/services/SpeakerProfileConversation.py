@@ -260,9 +260,10 @@ def generate_chatbot_welcome_message() -> str:
     """
     Generate welcome message for chatbot-based speaker profile onboarding.
     Asks for email and name upfront. Uses AI when available, otherwise fallback.
+    MUST include company name "Human Driven AI".
     """
     fallback_msg = (
-        "Hi! I am your Assistant for creating your Speaker profile.<br>"
+        "Hi! I am your Assistant for creating your Speaker profile at Human Driven AI.<br>"
         "Please provide your email and name to get started."
     )
     api_key = os.getenv("OPENAI_API_KEY")
@@ -276,10 +277,10 @@ def generate_chatbot_welcome_message() -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a friendly onboarding assistant for Human Driven AI. Write a short welcome message (2-3 lines max) that: "
-                    "1) Introduces yourself as the Assistant for creating Speaker profiles; "
+                    "content": "You are a friendly onboarding assistant. Write a short welcome message (2-3 lines max) that: "
+                    "1) MUST include the company name 'Human Driven AI' (e.g. 'Hi! I'm your Assistant for creating Speaker profiles at Human Driven AI'); "
                     "2) Asks the user to provide their email and name to get started. "
-                    "Use <br> tags for line breaks. No JSON. Warm and conversational tone.",
+                    "Use <br> tags for line breaks. No JSON. Warm and conversational tone. Always mention Human Driven AI by name.",
                 },
                 {"role": "user", "content": "Generate the welcome message."},
             ],

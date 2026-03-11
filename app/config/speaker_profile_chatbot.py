@@ -88,3 +88,22 @@ OPTIONAL_FIELDS = [
     "professional_memberships",
     "preferred_speaking_time",
 ]
+
+# Human-readable labels for optional fields (used in LLM prompts / user-facing messages)
+OPTIONAL_FIELDS_DISPLAY = {
+    "linkedin_url": "LinkedIn URL",
+    "past_speaking_examples": "Past speaking examples",
+    "video_links": "Video links",
+    "key_takeaways": "Key takeaways",
+    "name_salutation": "Name salutation",
+    "bio": "Bio",
+    "twitter": "Twitter",
+    "facebook": "Facebook",
+    "address_city": "Address city",
+    "address_state": "Address state",
+    "address_country": "Address country",
+    "phone_country_code": "Phone country code",
+    "phone_number": "Phone number",
+    "professional_memberships": "Professional memberships",
+    "preferred_speaking_time": "Preferred speaking time",
+}

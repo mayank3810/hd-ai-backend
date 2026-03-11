@@ -15,6 +15,9 @@ from app.config.speaker_profile_chatbot import (
     SPEAKING_FORMATS,
     DELIVERY_MODE,
     TARGET_AUDIENCES,
+    MANDATORY_FIELDS,
+    OPTIONAL_FIELDS,
+    OPTIONAL_FIELDS_DISPLAY,
 )
 from app.models.SpeakerProfile import PROFILE_FIELDS
 
@@ -29,7 +32,7 @@ UPSERT_TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "upsert_speaker_profile",
-        "description": "Create or update a speaker profile. Call this when you have extracted email and profile data from the conversation. If email exists, update the profile; otherwise create new.",
+        "description": "Create or update a speaker profile. CREATE: call with email only when user provides email (profile is created with just email). UPDATE: call with email + any field(s) the user provided (full_name, topics, linkedin_url, etc.). Mandatory fields get filled over time as user provides them.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -254,12 +257,25 @@ class SpeakerProfileChatbotService:
 
         return doc
 
+    def _merge_profile_for_update(self, existing: dict, profile_doc: dict) -> dict:
+        """Merge existing profile with new data. Overlay only fields present in profile_doc (from tool call)."""
+        merged = {k: v for k, v in existing.items() if k in PROFILE_FIELDS and k not in ("_id", "createdAt", "updatedAt")}
+        for k, v in profile_doc.items():
+            if k not in PROFILE_FIELDS or k in ("email", "_id", "createdAt"):
+                continue
+            if v is not None and v != "" and v != []:
+                merged[k] = v
+            elif k == "linkedin_url" and k in profile_doc:
+                merged[k] = (v.strip() or None) if isinstance(v, str) else v
+        return merged
+
     async def _execute_upsert(self, email: str, profile_doc: dict, user_id: Optional[str] = None) -> dict:
-        """Execute create or update. Returns result with action and profile."""
+        """Execute create or update. For update, merge existing profile with new data."""
         profile_doc["email"] = email.strip().lower()
         existing = await self.profile_model.get_profile_by_email(email)
         if existing:
-            updates = {k: v for k, v in profile_doc.items() if k != "email" and k != "createdAt" and k != "_id"}
+            merged = self._merge_profile_for_update(existing, profile_doc)
+            updates = {k: v for k, v in merged.items() if k != "email"}
             updated = await self.profile_model.update_chatbot_profile(email, updates)
             return {"action": "updated", "profile": updated}
         else:
@@ -281,12 +297,6 @@ class SpeakerProfileChatbotService:
             messages = []
 
         first_email = _extract_first_email_from_messages(messages)
-        if not first_email:
-            return {
-                "assistant_message": "I couldn't find an email address in our conversation. Please share your email so I can create or update your speaker profile.",
-                "profile": None,
-                "action": None,
-            }
 
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -297,16 +307,77 @@ class SpeakerProfileChatbotService:
             }
 
         client = OpenAI(api_key=api_key)
-        system_content = (
-            "You are a friendly assistant helping users create or update their speaker profile for Human Driven AI. "
-            "From the conversation, extract the first email address and any profile information (name, topics, speaking formats, delivery mode, talk description, target audiences, etc.). "
-            "Topics must be from: " + ", ".join(TOPICS) + ". "
+
+        if not first_email:
+            system_content = (
+                "You are a friendly assistant for Human Driven AI helping users create speaker profiles. "
+                "The user has NOT provided their email yet. "
+                "IMPORTANT: Respond naturally to their message FIRST (e.g. if they say 'hi', greet them back like 'Hi!' or 'Hello!'). "
+                "Then smoothly ask for their email and name to get started. "
+                "Do NOT give a robotic response like 'I couldn't find an email'. Instead, acknowledge what they said, then ask: "
+                "'Can you provide your email and name so we can get started?' or similar. "
+                "Keep it warm and conversational."
+            )
+            chat_messages = [
+                {"role": "system", "content": system_content},
+                *[{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages],
+            ]
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=chat_messages,
+                temperature=0.6,
+                timeout=15,
+            )
+            assistant_msg = (completion.choices[0].message.content or "").strip()
+            return {
+                "assistant_message": assistant_msg or "Hi! Can you provide your email and name so we can get started?",
+                "profile": None,
+                "action": None,
+            }
+
+        existing_profile = await self.profile_model.get_profile_by_email(first_email)
+        existing_profile_serializable = None
+        if existing_profile:
+            def _make_serializable(obj):
+                if hasattr(obj, "isoformat"):
+                    return obj.isoformat()
+                if isinstance(obj, dict):
+                    return {k: _make_serializable(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_make_serializable(x) for x in obj]
+                return str(obj) if hasattr(obj, "hex") else obj
+            existing_profile_serializable = {
+                k: _make_serializable(v) for k, v in existing_profile.items()
+                if v is not None and k not in ("conversation", "completed_steps", "last_assistant_message", "current_step")
+            }
+            if existing_profile.get("_id"):
+                existing_profile_serializable["_id"] = str(existing_profile["_id"])
+
+        system_parts = [
+            "You are a friendly assistant helping users create or update their speaker profile for Human Driven AI.",
+            "From the conversation, extract the first email and any profile information. "
+            "Topics from: " + ", ".join(TOPICS[:10]) + "... (full list in tool). "
             "Speaking formats from: " + ", ".join(SPEAKING_FORMATS) + ". "
             "Delivery mode from: " + ", ".join(DELIVERY_MODE) + ". "
-            "Target audiences from: " + ", ".join(TARGET_AUDIENCES) + ". "
-            "When you have enough info, call upsert_speaker_profile with email and the extracted data. "
-            "Always extract the FIRST email from the conversation. After the tool returns, write a brief, friendly message summarizing what was saved (created or updated)."
+            "Target audiences from: " + ", ".join(TARGET_AUDIENCES[:8]) + "... (full list in tool).",
+            "CRITICAL: Call upsert_speaker_profile when: (1) user provides EMAIL - create profile with email only; (2) user provides ANY profile field (name, topics, linkedin, etc.) - update with that field. Do NOT require all mandatory fields at once. Profile is created with email only; mandatory and optional fields are added via updates. Do NOT call the tool for greetings, small talk, or 'thanks' only. "
+            "Do NOT say 'I will update/create your profile' unless you have just called the tool. Respond naturally otherwise.",
+            "When all mandatory fields (full_name, email, topics, speaking_formats, delivery_mode, talk_description, target_audiences) are filled, say: "
+            "'All mandatory fields are done! Would you like to fill any optional parameters? You can add: " + ", ".join(OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS) + ".'",
+        ]
+        if existing_profile_serializable:
+            system_parts.append(
+                "IMPORTANT: A profile ALREADY EXISTS for this email. Profile data: "
+                + json.dumps(existing_profile_serializable, default=str)
+                + ". You MUST acknowledge this to the user: say something like 'A profile for this email already exists' and briefly mention what info we have (e.g. name, topics). "
+                "Then ASK: 'What changes would you like to make?' or 'Would you like to update any of your profile information?' "
+                "When the user provides NEW or CHANGED info (e.g. linkedin_url, topics), call upsert_speaker_profile with email and the new/changed field(s). The backend merges with existing data. "
+                "Use this profile data to answer questions and avoid re-asking. When user sends a greeting (e.g. 'hi') with existing profile: greet them, remind them their profile exists with [brief summary], then ask what they'd like to update."
+            )
+        system_parts.append(
+            "Always extract the FIRST email from the conversation. After the tool returns, write a brief, friendly message summarizing what was saved."
         )
+        system_content = " ".join(system_parts)
 
         chat_messages = [
             {"role": "system", "content": system_content},
