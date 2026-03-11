@@ -256,6 +256,46 @@ def _fallback_recovery(
     return msg
 
 
+def generate_chatbot_welcome_message() -> str:
+    """
+    Generate welcome message for chatbot-based speaker profile onboarding.
+    Asks for email and name upfront. Uses AI when available, otherwise fallback.
+    """
+    fallback_msg = (
+        "Hi! I am your Assistant for creating your Speaker profile.<br>"
+        "Please provide your email and name to get started."
+    )
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return fallback_msg
+
+    client = OpenAI(api_key=api_key)
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a friendly onboarding assistant for Human Driven AI. Write a short welcome message (2-3 lines max) that: "
+                    "1) Introduces yourself as the Assistant for creating Speaker profiles; "
+                    "2) Asks the user to provide their email and name to get started. "
+                    "Use <br> tags for line breaks. No JSON. Warm and conversational tone.",
+                },
+                {"role": "user", "content": "Generate the welcome message."},
+            ],
+            temperature=0.7,
+            timeout=10,
+        )
+        msg = (completion.choices[0].message.content or "").strip()
+        if not msg:
+            return fallback_msg
+        if "<br>" not in msg and "\n" in msg:
+            msg = msg.replace("\n", "<br>")
+        return msg
+    except Exception:
+        return fallback_msg
+
+
 def generate_welcome_message(first_step_question: str) -> str:
     """
     Generate an AI welcome message for the first step (init).

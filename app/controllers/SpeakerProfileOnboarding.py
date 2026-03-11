@@ -4,7 +4,8 @@ Stateless for init and verify-step; JWT required for final save.
 """
 import logging
 import os
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Request
 from postmarker.core import PostmarkClient
 
 from app.config.speaker_profile_steps import get_first_step, get_next_step, get_step_by_name, is_last_step, step_to_response
@@ -24,8 +25,14 @@ from app.services.SpeakerProfileOnboarding import (
 from app.services.SpeakerProfileConversation import (
     generate_recovery_message,
     generate_transition_message,
+    generate_chatbot_welcome_message,
 )
-from app.dependencies import get_speaker_profile_model, get_speaker_topics_model, get_speaker_target_audience_model
+from app.dependencies import (
+    get_speaker_profile_model,
+    get_speaker_topics_model,
+    get_speaker_target_audience_model,
+    get_speaker_profile_chatbot_service,
+)
 from app.helpers.Utilities import Utils
 from app.schemas.ServerResponse import ServerResponse
 
@@ -218,6 +225,43 @@ async def init_onboarding():
     No auth, no session, no DB.
     """
     return get_init_response()
+
+
+@router.post("/init-chatbot")
+async def init_chatbot_onboarding():
+    """
+    Start chatbot-based speaker profile flow. No input required.
+    Returns welcome message asking for email and name.
+    """
+    welcome = generate_chatbot_welcome_message()
+    return {"assistant_message": welcome}
+
+
+@router.post("/chat")
+async def speaker_profile_chat(
+    body: dict,
+    request: Request,
+    chatbot_service=Depends(get_speaker_profile_chatbot_service),
+):
+    """
+    Chat API for speaker profile creation/update via conversation.
+    Accepts generic dict body (e.g. {"messages": [{"role": "user", "content": "..."}]}).
+    LLM extracts email and profile data from conversation, creates or updates profile by email.
+    Returns LLM-generated response about what was saved.
+    JWT optional: when provided, user_id is linked to the profile.
+    """
+    user_id = None
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        try:
+            from fastapi.security import HTTPAuthorizationCredentials
+            creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth[7:].strip())
+            payload = jwt_validator(creds)
+            user_id = payload.get("id") or payload.get("user_id")
+        except Exception:
+            pass
+    result = await chatbot_service.process_chat(body, user_id=str(user_id) if user_id else None)
+    return Utils.create_response(result, True)
 
 
 def _profile_context(profile: dict) -> dict:

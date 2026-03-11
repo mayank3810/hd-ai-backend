@@ -34,6 +34,7 @@ _excel_schedule_service = None
 _speaker_profile_model = None
 _speaker_topics_model = None
 _speaker_target_audience_model = None
+_speaker_profile_chatbot_service = None
 _scraper_service = None
 _url_scraper_rapidapi_service = None
 _opportunity_service = None
@@ -95,6 +96,19 @@ def get_speaker_target_audience_model():
     return _speaker_target_audience_model
 
 
+def get_speaker_profile_chatbot_service():
+    """Get singleton SpeakerProfileChatbotService instance"""
+    global _speaker_profile_chatbot_service
+    if _speaker_profile_chatbot_service is None:
+        from app.services.SpeakerProfileChatbotService import SpeakerProfileChatbotService
+        _speaker_profile_chatbot_service = SpeakerProfileChatbotService(
+            get_speaker_profile_model(),
+            get_speaker_topics_model(),
+            get_speaker_target_audience_model(),
+        )
+    return _speaker_profile_chatbot_service
+
+
 def get_scraper_service():
     """Get singleton ScraperRapidAPIService instance (RapidAPI scraper + LLM)."""
     global _scraper_service
@@ -133,7 +147,7 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _scraper_service, _url_scraper_rapidapi_service, _opportunity_service
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _opportunity_service
 
     # Reset all services
     _auth_service = None
@@ -165,6 +179,7 @@ def cleanup_resources():
     _speaker_profile_model = None
     _speaker_topics_model = None
     _speaker_target_audience_model = None
+    _speaker_profile_chatbot_service = None
     _scraper_service = None
     _url_scraper_rapidapi_service = None
     _opportunity_service = None
