@@ -184,7 +184,7 @@ class SpeakerProfileChatbotService:
     def _merge_for_update(self, existing: dict, profile_doc: dict) -> dict:
         merged = {k: v for k, v in existing.items() if k in PROFILE_FIELDS and k not in ("_id", "createdAt", "updatedAt")}
         for k, v in profile_doc.items():
-            if k not in PROFILE_FIELDS or k in ("email", "_id"):
+            if k not in PROFILE_FIELDS or k == "_id":
                 continue
             if v is not None and v != "" and v != []:
                 merged[k] = v
@@ -205,7 +205,7 @@ class SpeakerProfileChatbotService:
             merged = self._merge_for_update(profile, profile_doc)
             if not merged:
                 return {"action": "updated", "profile": profile}
-            updates = {k: v for k, v in merged.items() if k != "email"}
+            updates = dict(merged)
             updated = await self.profile_model.update_profile(speaker_profile_id, updates)
             return {"action": "updated", "profile": updated}
         # Create
