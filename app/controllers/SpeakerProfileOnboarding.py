@@ -31,6 +31,7 @@ from app.dependencies import (
     get_speaker_profile_model,
     get_speaker_topics_model,
     get_speaker_target_audience_model,
+    get_chat_session_model,
     get_speaker_profile_chatbot_service,
 )
 from app.helpers.Utilities import Utils
@@ -245,9 +246,12 @@ async def speaker_profile_chat(
 ):
     """
     Chat API for speaker profile creation/update via conversation.
-    Accepts generic dict body (e.g. {"messages": [{"role": "user", "content": "..."}]}).
-    LLM extracts email and profile data from conversation, creates or updates profile by email.
-    Returns LLM-generated response about what was saved.
+    Body shape:
+      {
+        "message": "user message as string",
+        "chat_session_id": "optional existing chat session id"
+      }
+    LLM uses chat history + speaker profile to guide the flow.
     JWT optional: when provided, user_id is linked to the profile.
     """
     user_id = None
@@ -255,13 +259,53 @@ async def speaker_profile_chat(
     if auth and auth.startswith("Bearer "):
         try:
             from fastapi.security import HTTPAuthorizationCredentials
-            creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth[7:].strip())
+
+            creds = HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials=auth[7:].strip()
+            )
             payload = jwt_validator(creds)
             user_id = payload.get("id") or payload.get("user_id")
         except Exception:
             pass
-    result = await chatbot_service.process_chat(body, user_id=str(user_id) if user_id else None)
+
+    message = body.get("message") or ""
+    chat_session_id = body.get("chat_session_id")
+
+    result = await chatbot_service.process_chat(
+        message=message,
+        chat_session_id=chat_session_id,
+        user_id=str(user_id) if user_id else None,
+    )
     return Utils.create_response(result, True)
+
+
+@router.get("/chat-sessions/by-profile/{speaker_profile_id}", response_model=ServerResponse)
+async def get_chat_sessions_by_profile(
+    speaker_profile_id: str,
+    model=Depends(get_chat_session_model),
+):
+    """
+    Get all chat sessions for a given speaker profile id (newest first).
+    """
+    sessions = await model.get_by_profile_id(speaker_profile_id)
+    return Utils.create_response(sessions, True)
+
+
+@router.get("/chat-sessions/{chat_session_id}", response_model=ServerResponse)
+async def get_chat_session_by_id(
+    chat_session_id: str,
+    model=Depends(get_chat_session_model),
+):
+    """
+    Get a single chat session by id (includes full conversation).
+    """
+    session = await model.get_by_id(chat_session_id)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail={"data": None, "error": "Chat session not found.", "success": False},
+        )
+    return Utils.create_response(session, True)
 
 
 def _profile_context(profile: dict) -> dict:
