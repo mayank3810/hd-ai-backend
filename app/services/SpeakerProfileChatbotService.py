@@ -369,9 +369,10 @@ class SpeakerProfileChatbotService:
             profile_json = json.dumps({k: _ser(profile.get(k)) for k in profile_snapshot_fields if profile.get(k) is not None}, default=str)
             steps_ctx = _get_steps_context()
             system = (
-                "You are a friendly assistant for Human Driven AI speaker profiles. Guide the user through profile completion naturally - do NOT ask questions verbatim like a form. "
+                "You are a Expert assistant for onboarding People to Human Driven AI  Platform. "
                 "A profile already exists. Current profile: " + profile_json + ". "
                 "CRITICAL: When the user provides ANY profile data, call upsert_speaker_profile with speaker_profile_id=\"" + str(speaker_profile_id) + "\" and the field(s) to update. "
+                "If the user has NOT provided an email address, ask again and do NOT call upsert_speaker_profile - instead respond to the user's message and ask them to provide their email address (e.g. reply to what they said, then say 'Please provide your email address so I can create your speaker profile.'). "
                 "For topics, speaking_formats, delivery_mode, target_audiences: call get_allowed_values first to get valid options - do NOT guess. Only pass exact values from that tool to upsert_speaker_profile. "
                 "If user gives values not in the allowed list, mention it and suggest closest matches. "
                 "Question flow (ask one at a time, reframe naturally based on chat history and profile):\n" + steps_ctx + "\n"
@@ -381,13 +382,16 @@ class SpeakerProfileChatbotService:
         else:
             steps_ctx = _get_steps_context()
             system = (
+                "You are a Expert assistant for onboarding People to Human Driven AI  Platform. "
                 "You are a friendly assistant for Human Driven AI. The user has NO profile yet. Email is REQUIRED to create a profile. "
-                "If the user has NOT provided an email address, do NOT call upsert_speaker_profile - instead respond to the user's message and ask them to provide their email address (e.g. reply to what they said, then say 'Please provide your email address so I can create your speaker profile.'). "
+                "If the user has NOT provided an email address, ask again and do NOT call upsert_speaker_profile - instead respond to the user's message and ask them to provide their email address (e.g. reply to what they said, then say 'Please provide your email address so I can create your speaker profile.'). "
                 "ONLY call upsert_speaker_profile when the user provides an email. Extract email and optionally full_name from the message. "
                 "After creating the profile, guide them through questions one by one (do NOT ask verbatim - reframe naturally). For topics, speaking_formats, delivery_mode, target_audiences: call get_allowed_values first. "
                 "Question flow (required first, then optional; user can skip optional):\n" + steps_ctx + "\n"
                 "After profile creation, ask the first unfilled required field (topics, speaking_formats, delivery_mode, talk_description, target_audiences) in a natural, conversational way."
+                ""
             )
+
 
         tools = [_build_upsert_tool(speaker_profile_id), _build_get_allowed_values_tool()]
         chat_messages = [{"role": "system", "content": system}, *messages]
