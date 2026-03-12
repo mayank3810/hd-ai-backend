@@ -42,11 +42,13 @@ _ALLOWED_VALUES_MAP = {
 
 
 def _get_steps_context() -> str:
-    """Build context for LLM: step order, questions (for reframing), required vs optional."""
+    """Build context for LLM: step order (required first, then optional), questions (for reframing)."""
+    required_steps = [s for s in STEPS if s.step_name not in ("full_name", "email") and s.required]
+    optional_steps = [s for s in STEPS if s.step_name not in ("full_name", "email") and not s.required]
+    # Order: required first (topics, speaking_formats, delivery_mode, talk_description, target_audiences), then optional
+    ordered = required_steps + optional_steps
     lines = []
-    for s in STEPS:
-        if s.step_name in ("full_name", "email"):
-            continue
+    for s in ordered:
         req = "required" if s.required else "optional (user can skip)"
         q = (s.question or "").replace("<br>", " ").strip()
         lines.append(f"- {s.step_name} ({req}): reference question: \"{q}\"")
@@ -365,31 +367,29 @@ class SpeakerProfileChatbotService:
                 return str(o) if hasattr(o, "hex") else o
 
             # Only include key profile fields so the LLM knows what data exists in the database
-            profile_snapshot_fields = ("full_name", "email", "topics", "target_audiences", "speaking_formats", "delivery_mode")
+            profile_snapshot_fields = ("full_name", "email", "topics", "target_audiences", "speaking_formats", "delivery_mode", "talk_description")
             profile_json = json.dumps({k: _ser(profile.get(k)) for k in profile_snapshot_fields if profile.get(k) is not None}, default=str)
             steps_ctx = _get_steps_context()
             system = (
-                "You are a Expert assistant for onboarding People to Human Driven AI  Platform. "
+                "You are an expert assistant for onboarding people to the Human Driven AI platform. Stick ONLY to speaker profile creation/update - do not offer help with unrelated topics. "
                 "A profile already exists. Current profile: " + profile_json + ". "
                 "CRITICAL: When the user provides ANY profile data, call upsert_speaker_profile with speaker_profile_id=\"" + str(speaker_profile_id) + "\" and the field(s) to update. "
-                "If the user has NOT provided an email address, ask again and do NOT call upsert_speaker_profile - instead respond to the user's message and ask them to provide their email address (e.g. reply to what they said, then say 'Please provide your email address so I can create your speaker profile.'). "
-                "For topics, speaking_formats, delivery_mode, target_audiences: call get_allowed_values first to get valid options - do NOT guess. Only pass exact values from that tool to upsert_speaker_profile. "
-                "If user gives values not in the allowed list, mention it and suggest closest matches. "
+                "For topics, speaking_formats, delivery_mode, target_audiences: ALWAYS call get_allowed_values first. Use ONLY the exact values returned - never add extra options (e.g. no Webinar, Fireside Chat if not in the list). When presenting options to the user, list ONLY what get_allowed_values returns. Only pass exact values from that tool to upsert_speaker_profile. "
+                "If user gives values not in the allowed list, mention it and suggest closest matches from get_allowed_values only. "
                 "Question flow (ask one at a time, reframe naturally based on chat history and profile):\n" + steps_ctx + "\n"
-                "Required fields (topics, speaking_formats, delivery_mode, talk_description, target_audiences) cannot be skipped. Optional fields (linkedin_url, past_speaking_examples, video_links, key_takeaways) - user can skip. Ask required first. "
+                "CRITICAL: You MUST ask ALL 5 required fields in this exact order - topics, speaking_formats, delivery_mode, talk_description, target_audiences. Optional fields (linkedin_url, past_speaking_examples, video_links, key_takeaways) - user can skip. Ask required first. "
                 "When all mandatory fields are done, do NOT say 'let's move on to optional fields' or list optional fields - directly ask the next question (first optional: linkedin_url, then past_speaking_examples, video_links, key_takeaways). Continue one question at a time. When user asks about their profile, use the profile data above."
             )
         else:
             steps_ctx = _get_steps_context()
             system = (
-                "You are a Expert assistant for onboarding People to Human Driven AI  Platform. "
-                "You are a friendly assistant for Human Driven AI. The user has NO profile yet. Email is REQUIRED to create a profile. "
-                "If the user has NOT provided an email address, ask again and do NOT call upsert_speaker_profile - instead respond to the user's message and ask them to provide their email address (e.g. reply to what they said, then say 'Please provide your email address so I can create your speaker profile.'). "
+                "You are an expert assistant for onboarding people to the Human Driven AI platform. Stick ONLY to speaker profile creation/update - do not offer help with unrelated topics. "
+                "The user has NO profile yet or no email address in input message. Email is REQUIRED to create a profile. "
+                "If the user has NOT provided an email address, do NOT call upsert_speaker_profile - respond focused on profile creation, e.g. 'How can I assist you today to create a speaker profile? I'll need your email address to get started.' Do NOT say things like 'If you're looking to create...' - keep it direct and focused. "
                 "ONLY call upsert_speaker_profile when the user provides an email. Extract email and optionally full_name from the message. "
-                "After creating the profile, guide them through questions one by one (do NOT ask verbatim - reframe naturally). For topics, speaking_formats, delivery_mode, target_audiences: call get_allowed_values first. "
+                "After creating the profile, guide them through questions one by one (do NOT ask verbatim - reframe naturally). For topics, speaking_formats, delivery_mode, target_audiences: ALWAYS call get_allowed_values first and present ONLY those exact values - never add extra options like Webinar, Fireside Chat, etc. "
                 "Question flow (required first, then optional; user can skip optional):\n" + steps_ctx + "\n"
                 "After profile creation, ask the first unfilled required field (topics, speaking_formats, delivery_mode, talk_description, target_audiences) in a natural, conversational way."
-                ""
             )
 
 
@@ -459,7 +459,7 @@ class SpeakerProfileChatbotService:
             assistant_content = (last.get("content") or "").strip()
         if not assistant_content or last.get("role") == "tool":
             if action == "email_required":
-                assistant_content = "Please provide your email address so I can create your speaker profile."
+                assistant_content = "How can I assist you today to create a speaker profile? I'll need your email address to get started."
             elif action == "created" and profile:
                 name = (profile.get("full_name") or "").strip() or "you"
                 email = (profile.get("email") or "").strip() or ""
@@ -477,7 +477,7 @@ class SpeakerProfileChatbotService:
                 if not assistant_content:
                     assistant_content = f"Your profile has been created for {name}" + (f" ({email})!" if email else "!") + f" What would you like to add? You can add: Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
             else:
-                prompt = "Briefly tell the user what was done." if action == "created" else ("Briefly tell the user what was updated." if action == "updated" else "Ask the user for their email address to create their speaker profile.")
+                prompt = "Briefly tell the user what was done." if action == "created" else ("Briefly tell the user what was updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
                 if not assistant_content:
                     try:
                         s = client.chat.completions.create(
@@ -490,7 +490,7 @@ class SpeakerProfileChatbotService:
                     except Exception:
                         pass
                 if not assistant_content:
-                    assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "To get started, please share your email address so I can create your speaker profile.")
+                    assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
 
         # ChatSession: create if new, else append
         chunk = [{"role": "user", "content": message or ""}, {"role": "assistant", "content": assistant_content}]
