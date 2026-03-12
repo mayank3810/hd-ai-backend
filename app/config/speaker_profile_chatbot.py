@@ -66,12 +66,12 @@ MANDATORY_FIELDS = [
     "topics",
     "speaking_formats",
     "delivery_mode",
-    "talk_description",
     "target_audiences",
 ]
 
 # Optional fields (asked after all mandatory are filled)
 OPTIONAL_FIELDS = [
+    "talk_description",
     "linkedin_url",
     "past_speaking_examples",
     "video_links",
@@ -89,8 +89,19 @@ OPTIONAL_FIELDS = [
     "preferred_speaking_time",
 ]
 
+# Human-readable labels for mandatory fields (used in user-facing messages)
+MANDATORY_FIELDS_DISPLAY = {
+    "full_name": "Full name",
+    "email": "Email",
+    "topics": "Topics",
+    "speaking_formats": "Speaking formats",
+    "delivery_mode": "Delivery mode",
+    "target_audiences": "Target audiences",
+}
+
 # Human-readable labels for optional fields (used in LLM prompts / user-facing messages)
 OPTIONAL_FIELDS_DISPLAY = {
+    "talk_description": "Talk description",
     "linkedin_url": "LinkedIn URL",
     "past_speaking_examples": "Past speaking examples",
     "video_links": "Video links",

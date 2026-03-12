@@ -1,6 +1,6 @@
 """
-Speaker Profile Chatbot Service: conversation-based onboarding.
-Uses LLM to extract profile data from messages, tool calling for create/update.
+Speaker Profile Chatbot Service: LLM-driven create/update via tool calls.
+Flow: user message -> LLM -> tool call -> create/update profile -> ChatSession -> return.
 """
 import json
 import logging
@@ -16,107 +16,122 @@ from app.config.speaker_profile_chatbot import (
     DELIVERY_MODE,
     TARGET_AUDIENCES,
     MANDATORY_FIELDS,
+    MANDATORY_FIELDS_DISPLAY,
     OPTIONAL_FIELDS,
     OPTIONAL_FIELDS_DISPLAY,
 )
+from app.config.speaker_profile_steps import STEPS
 from app.models.SpeakerProfile import PROFILE_FIELDS
 
 logger = logging.getLogger(__name__)
 
-# Email regex for extraction
 _EMAIL_REGEX = re.compile(
     r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}"
 )
 
-UPSERT_TOOL_DEF = {
-    "type": "function",
-    "function": {
-        "name": "upsert_speaker_profile",
-        "description": "Create or update a speaker profile. CREATE: call with email only when user provides email (profile is created with just email). UPDATE: call with email + any field(s) the user provided (full_name, topics, linkedin_url, etc.). Mandatory fields get filled over time as user provides them.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "email": {
-                    "type": "string",
-                    "description": "Email address (required; first one found in conversation)",
-                },
-                "full_name": {"type": "string", "description": "Full name of the speaker"},
-                "topics": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": f"Topic names from: {TOPICS}",
-                },
-                "speaking_formats": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": f"From: {SPEAKING_FORMATS}",
-                },
-                "delivery_mode": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": f"From: {DELIVERY_MODE}",
-                },
-                "talk_description": {"type": "string", "description": "Description of talk or expertise"},
-                "target_audiences": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": f"From: {TARGET_AUDIENCES}",
-                },
-                "linkedin_url": {"type": "string", "description": "LinkedIn profile URL"},
-                "past_speaking_examples": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Past speaking examples or events",
-                },
-                "video_links": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Links to speaking videos (YouTube/Vimeo)",
-                },
-                "key_takeaways": {"type": "string", "description": "Key takeaways for audience"},
-                "name_salutation": {"type": "string"},
-                "bio": {"type": "string"},
-                "twitter": {"type": "string"},
-                "facebook": {"type": "string"},
-                "address_city": {"type": "string"},
-                "address_state": {"type": "string"},
-                "address_country": {"type": "string"},
-                "phone_country_code": {"type": "string"},
-                "phone_number": {"type": "string"},
-                "professional_memberships": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-                "preferred_speaking_time": {"type": "string"},
-            },
-            "required": ["email"],
-        },
-    },
+# Steps for profile completion (excl. full_name, email). Required first, then optional.
+_CHATBOT_REQUIRED_STEPS = ["topics", "speaking_formats", "delivery_mode", "target_audiences"]
+_CHATBOT_OPTIONAL_STEPS = ["talk_description", "linkedin_url", "past_speaking_examples", "video_links", "key_takeaways"]
+
+_ALLOWED_VALUES_MAP = {
+    "topics": TOPICS,
+    "speaking_formats": SPEAKING_FORMATS,
+    "delivery_mode": DELIVERY_MODE,
+    "target_audiences": TARGET_AUDIENCES,
 }
 
 
-def _extract_first_email_from_messages(messages: List[dict]) -> Optional[str]:
-    """Extract first email from user messages in conversation."""
-    for m in messages or []:
-        if m.get("role") != "user":
-            continue
-        content = m.get("content")
-        if isinstance(content, str):
-            match = _EMAIL_REGEX.search(content)
-            if match:
-                return match.group(0).strip().lower()
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text = part.get("text", "")
-                    match = _EMAIL_REGEX.search(text)
-                    if match:
-                        return match.group(0).strip().lower()
-    return None
+def _get_steps_context() -> str:
+    """Build context for LLM: step order (required first, then optional), questions (for reframing)."""
+    required_steps = [s for s in STEPS if s.step_name not in ("full_name", "email") and s.required]
+    optional_steps = [s for s in STEPS if s.step_name not in ("full_name", "email") and not s.required]
+    # Order: required first (topics, speaking_formats, delivery_mode, talk_description, target_audiences), then optional
+    ordered = required_steps + optional_steps
+    lines = []
+    for s in ordered:
+        req = "required" if s.required else "optional (user can skip)"
+        q = (s.question or "").replace("<br>", " ").strip()
+        lines.append(f"- {s.step_name} ({req}): reference question: \"{q}\"")
+    return "\n".join(lines) if lines else ""
+
+
+def _build_get_allowed_values_tool() -> dict:
+    """Tool for LLM to fetch valid options for topics, speaking_formats, delivery_mode, target_audiences."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_allowed_values",
+            "description": "Fetch the allowed/valid values for topics, speaking_formats, delivery_mode, or target_audiences. Call this BEFORE asking the user for these fields or validating their input. Use value_type to specify which field.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "value_type": {
+                        "type": "string",
+                        "enum": ["topics", "speaking_formats", "delivery_mode", "target_audiences"],
+                        "description": "Which field's allowed values to fetch.",
+                    },
+                },
+                "required": ["value_type"],
+            },
+        },
+    }
+
+
+def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
+    """Build tool def. When speaker_profile_id_from_session is set, emphasize UPDATE with that id."""
+    if speaker_profile_id_from_session:
+        desc = (
+            f"Update speaker profile. speaker_profile_id is REQUIRED: use \"{speaker_profile_id_from_session}\". "
+            "Call this whenever the user provides ANY profile data to add or change (name, email, topics, linkedin_url, etc.). "
+            "Pass speaker_profile_id and the fields to update."
+        )
+    else:
+        desc = (
+            "Create new speaker profile. Call this ONLY when the user provides an email address. "
+            "Email is REQUIRED for profile creation. If the user has not provided email, do NOT call this - instead ask them for their email. "
+            "Extract email and optionally full_name from the user message. Omit speaker_profile_id for create."
+        )
+    return {
+        "type": "function",
+        "function": {
+            "name": "upsert_speaker_profile",
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "speaker_profile_id": {
+                        "type": "string",
+                        "description": "For UPDATE: REQUIRED, use value from chat session. For CREATE: omit.",
+                    },
+                    "email": {"type": "string", "description": "Email"},
+                    "full_name": {"type": "string", "description": "Full name"},
+                    "topics": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='topics') first for valid options. Pass exact values only."},
+                    "speaking_formats": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='speaking_formats') first for valid options. Pass exact values only."},
+                    "delivery_mode": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='delivery_mode') first for valid options. Pass exact values only."},
+                    "talk_description": {"type": "string"},
+                    "target_audiences": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='target_audiences') first for valid options. Pass exact values only."},
+                    "linkedin_url": {"type": "string"},
+                    "past_speaking_examples": {"type": "array", "items": {"type": "string"}},
+                    "video_links": {"type": "array", "items": {"type": "string"}},
+                    "key_takeaways": {"type": "string"},
+                    "name_salutation": {"type": "string"},
+                    "bio": {"type": "string"},
+                    "twitter": {"type": "string"},
+                    "facebook": {"type": "string"},
+                    "address_city": {"type": "string"},
+                    "address_state": {"type": "string"},
+                    "address_country": {"type": "string"},
+                    "phone_country_code": {"type": "string"},
+                    "phone_number": {"type": "string"},
+                    "professional_memberships": {"type": "array", "items": {"type": "string"}},
+                    "preferred_speaking_time": {"type": "string"},
+                },
+            },
+        },
+    }
 
 
 def _filter_enum_values(values: List[str], allowed: List[str]) -> List[str]:
-    """Filter values to only those in allowed list (case-insensitive match)."""
     if not values:
         return []
     allowed_lower = {a.strip().lower(): a for a in allowed}
@@ -133,24 +148,20 @@ def _filter_enum_values(values: List[str], allowed: List[str]) -> List[str]:
     return out
 
 
-def _normalize_profile_from_tool_args(args: dict) -> dict:
-    """Normalize tool call args into profile-ready dict."""
-    return {k: v for k, v in args.items() if v is not None and v != "" and v != [] and k in PROFILE_FIELDS}
-
-
 class SpeakerProfileChatbotService:
     def __init__(
         self,
         speaker_profile_model,
         speaker_topics_model,
         speaker_target_audience_model,
+        chat_session_model,
     ):
         self.profile_model = speaker_profile_model
         self.topics_model = speaker_topics_model
         self.audience_model = speaker_target_audience_model
+        self.chat_session_model = chat_session_model
 
     async def _resolve_topics(self, topic_names: List[str]) -> List[dict]:
-        """Resolve topic names to {_id, name, slug} from speakerTopics collection."""
         if not topic_names:
             return []
         filtered = _filter_enum_values(topic_names, TOPICS)
@@ -159,7 +170,6 @@ class SpeakerProfileChatbotService:
         return await self.topics_model.get_many_by_names(filtered)
 
     async def _resolve_target_audiences(self, audience_names: List[str]) -> List[dict]:
-        """Resolve audience names to {_id, name, slug} from speakerTargetAudeince collection."""
         if not audience_names:
             return []
         filtered = _filter_enum_values(audience_names, TARGET_AUDIENCES)
@@ -168,309 +178,531 @@ class SpeakerProfileChatbotService:
         return await self.audience_model.get_many_by_names(filtered)
 
     async def _build_profile_doc(self, tool_args: dict) -> dict:
-        """Build profile document from tool args, resolving topics and target_audiences."""
         doc = {}
-
         email = (tool_args.get("email") or "").strip().lower()
         if email:
             doc["email"] = email
-
         full_name = (tool_args.get("full_name") or "").strip()
         if full_name:
             doc["full_name"] = full_name
-
         topics_raw = tool_args.get("topics")
         if topics_raw and isinstance(topics_raw, list):
-            topics_resolved = await self._resolve_topics([str(t).strip() for t in topics_raw])
-            if topics_resolved:
-                doc["topics"] = topics_resolved
-
+            resolved = await self._resolve_topics([str(t).strip() for t in topics_raw])
+            if resolved:
+                doc["topics"] = resolved
         speaking_formats = _filter_enum_values(
             [str(x).strip() for x in tool_args.get("speaking_formats", []) if x],
             SPEAKING_FORMATS,
         )
         if speaking_formats:
             doc["speaking_formats"] = speaking_formats
-
         delivery_mode = _filter_enum_values(
             [str(x).strip() for x in tool_args.get("delivery_mode", []) if x],
             DELIVERY_MODE,
         )
         if delivery_mode:
             doc["delivery_mode"] = delivery_mode
-
         talk_desc = (tool_args.get("talk_description") or "").strip()
         if talk_desc:
             doc["talk_description"] = talk_desc
-
         audiences_raw = tool_args.get("target_audiences")
         if audiences_raw and isinstance(audiences_raw, list):
-            audiences_resolved = await self._resolve_target_audiences(
-                [str(a).strip() for a in audiences_raw if a]
-            )
-            if audiences_resolved:
-                doc["target_audiences"] = audiences_resolved
-
+            resolved = await self._resolve_target_audiences([str(a).strip() for a in audiences_raw if a])
+            if resolved:
+                doc["target_audiences"] = resolved
         linkedin = (tool_args.get("linkedin_url") or "").strip()
         if linkedin:
             doc["linkedin_url"] = linkedin
-        elif "linkedin_url" not in doc:
-            doc["linkedin_url"] = None
-
-        past_examples = tool_args.get("past_speaking_examples")
-        if isinstance(past_examples, list):
-            doc["past_speaking_examples"] = [str(x).strip() for x in past_examples if x]
-        elif past_examples is not None and past_examples != "":
-            doc["past_speaking_examples"] = [str(past_examples).strip()]
-        elif "past_speaking_examples" not in doc:
-            doc["past_speaking_examples"] = []
-
-        video_links = tool_args.get("video_links")
-        if isinstance(video_links, list):
-            doc["video_links"] = [str(x).strip() for x in video_links if x]
-        elif video_links is not None and video_links != "":
-            doc["video_links"] = [str(video_links).strip()]
-        elif "video_links" not in doc:
-            doc["video_links"] = []
-
-        key_takeaways = (tool_args.get("key_takeaways") or "").strip()
-        if key_takeaways:
-            doc["key_takeaways"] = key_takeaways
-
-        for field in [
-            "name_salutation", "bio", "twitter", "facebook",
-            "address_city", "address_state", "address_country",
-            "phone_country_code", "phone_number", "preferred_speaking_time",
-        ]:
-            v = tool_args.get(field)
-            if v is not None:
-                if isinstance(v, str):
-                    doc[field] = v.strip() or None
-                else:
-                    doc[field] = v
-
-        pro_memberships = tool_args.get("professional_memberships")
-        if isinstance(pro_memberships, list):
-            doc["professional_memberships"] = [str(x).strip() for x in pro_memberships if x]
-        elif pro_memberships:
-            doc["professional_memberships"] = [str(pro_memberships).strip()]
-
+        past = tool_args.get("past_speaking_examples")
+        if isinstance(past, list):
+            doc["past_speaking_examples"] = [str(x).strip() for x in past if x]
+        video = tool_args.get("video_links")
+        if isinstance(video, list):
+            doc["video_links"] = [str(x).strip() for x in video if x]
+        kt = (tool_args.get("key_takeaways") or "").strip()
+        if kt:
+            doc["key_takeaways"] = kt
+        for k in ["name_salutation", "bio", "twitter", "facebook", "address_city", "address_state", "address_country", "phone_country_code", "phone_number", "preferred_speaking_time"]:
+            v = tool_args.get(k)
+            if v is not None and isinstance(v, str):
+                doc[k] = v.strip() or None
+        pm = tool_args.get("professional_memberships")
+        if isinstance(pm, list):
+            doc["professional_memberships"] = [str(x).strip() for x in pm if x]
         return doc
 
-    def _merge_profile_for_update(self, existing: dict, profile_doc: dict) -> dict:
-        """Merge existing profile with new data. Overlay only fields present in profile_doc (from tool call)."""
+    def _merge_for_update(self, existing: dict, profile_doc: dict) -> dict:
         merged = {k: v for k, v in existing.items() if k in PROFILE_FIELDS and k not in ("_id", "createdAt", "updatedAt")}
         for k, v in profile_doc.items():
-            if k not in PROFILE_FIELDS or k in ("email", "_id", "createdAt"):
+            if k not in PROFILE_FIELDS or k == "_id":
                 continue
             if v is not None and v != "" and v != []:
                 merged[k] = v
-            elif k == "linkedin_url" and k in profile_doc:
-                merged[k] = (v.strip() or None) if isinstance(v, str) else v
         return merged
 
-    async def _execute_upsert(self, email: str, profile_doc: dict, user_id: Optional[str] = None) -> dict:
-        """Execute create or update. For update, merge existing profile with new data."""
-        profile_doc["email"] = email.strip().lower()
-        existing = await self.profile_model.get_profile_by_email(email)
-        if existing:
-            merged = self._merge_profile_for_update(existing, profile_doc)
-            updates = {k: v for k, v in merged.items() if k != "email"}
-            updated = await self.profile_model.update_chatbot_profile(email, updates)
+    def _get_fields_to_add_message(self, profile: Optional[dict] = None) -> str:
+        """Return list of parameters user can add, as readable text."""
+        remaining_mandatory = []
+        for f in MANDATORY_FIELDS:
+            if f in ("full_name", "email"):
+                continue
+            if not profile or not bool(profile.get(f)):
+                remaining_mandatory.append(MANDATORY_FIELDS_DISPLAY.get(f, f))
+        optional_labels = [OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS]
+        parts = []
+        if remaining_mandatory:
+            parts.append("Required: " + ", ".join(remaining_mandatory))
+        if optional_labels:
+            parts.append("Optional: " + ", ".join(optional_labels))
+        return ". ".join(parts) if parts else "additional profile details"
+
+    def _all_mandatory_filled(self, profile: dict) -> bool:
+        """Check if all MANDATORY_FIELDS are filled in the profile."""
+        return all(bool(profile.get(f)) for f in MANDATORY_FIELDS)
+
+    async def _set_completed_if_mandatory_filled(
+        self, speaker_profile_id: str, profile: dict
+    ) -> Optional[dict]:
+        """If all mandatory fields are filled, set isCompleted=True on the profile. Returns updated profile or None."""
+        if not self._all_mandatory_filled(profile):
+            return None
+        return await self.profile_model.update_profile(
+            speaker_profile_id,
+            {"isCompleted": True},
+        )
+
+    async def _execute_upsert(
+        self,
+        args: dict,
+        speaker_profile_id: Optional[str],
+        user_id: Optional[str],
+    ) -> dict:
+        """Create or update by speaker_profile_id (when provided) or by email."""
+        profile_doc = await self._build_profile_doc(args)
+        if speaker_profile_id:
+            profile = await self.profile_model.get_profile(speaker_profile_id)
+            if not profile:
+                return {"action": "error", "profile": None}
+            merged = self._merge_for_update(profile, profile_doc)
+            if not merged:
+                updated = profile
+            else:
+                updates = dict(merged)
+                updated = await self.profile_model.update_profile(speaker_profile_id, updates)
+                if not updated:
+                    return {"action": "error", "profile": None}
+            # After every update: check mandatory fields; if all filled, set isCompleted=True
+            refreshed = await self._set_completed_if_mandatory_filled(speaker_profile_id, updated)
+            if refreshed:
+                updated = refreshed
             return {"action": "updated", "profile": updated}
-        else:
-            created = await self.profile_model.create_chatbot_profile(profile_doc, user_id)
-            return {"action": "created", "profile": created}
+        # Create - email is required
+        email = (args.get("email") or "").strip().lower()
+        if not email:
+            return {"action": "email_required", "profile": None}
+        full_name = (args.get("full_name") or "").strip()
+        profile_doc["email"] = email
+        profile_doc["full_name"] = full_name or email.split("@")[0]  # Use email prefix if no name
+        created = await self.profile_model.create_chatbot_profile(profile_doc, user_id)
+        # After create: check mandatory fields; if all filled, set isCompleted=True
+        spid = str(created.get("_id", ""))
+        if spid:
+            refreshed = await self._set_completed_if_mandatory_filled(spid, created)
+            if refreshed:
+                created = refreshed
+        return {"action": "created", "profile": created}
 
     async def process_chat(
         self,
-        body: dict,
+        message: str,
+        chat_session_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> dict:
         """
-        Process chat messages. Extracts email, runs LLM with tool calling, create/update profile,
-        returns LLM-generated response about what was created/updated.
-        body: dict with "messages" (list of {role, content}) - Open AI style.
+        Flow:
+        - No session_id: If message has no email, LLM asks for email; create ChatSession (no profile).
+          If message has email, LLM creates profile via tool; create ChatSession with speaker_profile_id.
+        - With session_id, no profile: Same - ask for email or create profile when email provided.
+          If profile created, update session with speaker_profile_id.
+        - With session_id + profile: LLM upserts via tool using speaker_profile_id.
         """
-        messages = body.get("messages") or body.get("message") or []
-        if not isinstance(messages, list):
-            messages = []
-
-        first_email = _extract_first_email_from_messages(messages)
-
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             return {
-                "assistant_message": "Service is temporarily unavailable. Please try again later.",
-                "profile": None,
+                "assistant_message": "Service is temporarily unavailable.",
                 "action": None,
+                "speaker_profile_id": None,
+                "chat_session_id": chat_session_id,
+                "profile_snapshot": None,
             }
 
         client = OpenAI(api_key=api_key)
+        session = None
+        speaker_profile_id = None
+        profile = None
+        history: List[Dict[str, Any]] = []
 
-        if not first_email:
-            system_content = (
-                "You are a friendly assistant for Human Driven AI helping users create speaker profiles. "
-                "The user has NOT provided their email yet. "
-                "IMPORTANT: Respond naturally to their message FIRST (e.g. if they say 'hi', greet them back like 'Hi!' or 'Hello!'). "
-                "Then smoothly ask for their email and name to get started. "
-                "Do NOT give a robotic response like 'I couldn't find an email'. Instead, acknowledge what they said, then ask: "
-                "'Can you provide your email and name so we can get started?' or similar. "
-                "Keep it warm and conversational."
-            )
-            chat_messages = [
-                {"role": "system", "content": system_content},
-                *[{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages],
-            ]
-            completion = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=chat_messages,
-                temperature=0.6,
-                timeout=15,
-            )
-            assistant_msg = (completion.choices[0].message.content or "").strip()
-            return {
-                "assistant_message": assistant_msg or "Hi! Can you provide your email and name so we can get started?",
-                "profile": None,
-                "action": None,
-            }
+        if chat_session_id:
+            session = await self.chat_session_model.get_by_id(chat_session_id)
+            if session:
+                speaker_profile_id = (session.get("speaker_profile_id") or "").strip() or None
+                if speaker_profile_id:
+                    profile = await self.profile_model.get_profile(speaker_profile_id)
+                    if profile:
+                        profile["_id"] = str(profile["_id"])
+                conv = session.get("conversation") or []
+                history = [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in conv]
 
-        existing_profile = await self.profile_model.get_profile_by_email(first_email)
-        existing_profile_serializable = None
-        if existing_profile:
-            def _make_serializable(obj):
-                if hasattr(obj, "isoformat"):
-                    return obj.isoformat()
-                if isinstance(obj, dict):
-                    return {k: _make_serializable(v) for k, v in obj.items()}
-                if isinstance(obj, list):
-                    return [_make_serializable(x) for x in obj]
-                return str(obj) if hasattr(obj, "hex") else obj
-            existing_profile_serializable = {
-                k: _make_serializable(v) for k, v in existing_profile.items()
-                if v is not None and k not in ("conversation", "completed_steps", "last_assistant_message", "current_step")
-            }
-            if existing_profile.get("_id"):
-                existing_profile_serializable["_id"] = str(existing_profile["_id"])
+        messages = [*history, {"role": "user", "content": message or ""}]
 
-        system_parts = [
-            "You are a friendly assistant helping users create or update their speaker profile for Human Driven AI.",
-            "From the conversation, extract the first email and any profile information. "
-            "Topics from: " + ", ".join(TOPICS[:10]) + "... (full list in tool). "
-            "Speaking formats from: " + ", ".join(SPEAKING_FORMATS) + ". "
-            "Delivery mode from: " + ", ".join(DELIVERY_MODE) + ". "
-            "Target audiences from: " + ", ".join(TARGET_AUDIENCES[:8]) + "... (full list in tool).",
-            "CRITICAL: Call upsert_speaker_profile when: (1) user provides EMAIL - create profile with email only; (2) user provides ANY profile field (name, topics, linkedin, etc.) - update with that field. Do NOT require all mandatory fields at once. Profile is created with email only; mandatory and optional fields are added via updates. Do NOT call the tool for greetings, small talk, or 'thanks' only. "
-            "Do NOT say 'I will update/create your profile' unless you have just called the tool. Respond naturally otherwise.",
-            "When all mandatory fields (full_name, email, topics, speaking_formats, delivery_mode, talk_description, target_audiences) are filled, say: "
-            "'All mandatory fields are done! Would you like to fill any optional parameters? You can add: " + ", ".join(OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS) + ".'",
-        ]
-        if existing_profile_serializable:
-            system_parts.append(
-                "IMPORTANT: A profile ALREADY EXISTS for this email. Profile data: "
-                + json.dumps(existing_profile_serializable, default=str)
-                + ". You MUST acknowledge this to the user: say something like 'A profile for this email already exists' and briefly mention what info we have (e.g. name, topics). "
-                "Then ASK: 'What changes would you like to make?' or 'Would you like to update any of your profile information?' "
-                "When the user provides NEW or CHANGED info (e.g. linkedin_url, topics), call upsert_speaker_profile with email and the new/changed field(s). The backend merges with existing data. "
-                "Use this profile data to answer questions and avoid re-asking. When user sends a greeting (e.g. 'hi') with existing profile: greet them, remind them their profile exists with [brief summary], then ask what they'd like to update."
-            )
-        system_parts.append(
-            "Always extract the FIRST email from the conversation. After the tool returns, write a brief, friendly message summarizing what was saved."
-        )
-        system_content = " ".join(system_parts)
+        # Build system prompt
+        if speaker_profile_id and profile:
+            def _ser(o):
+                if hasattr(o, "isoformat"):
+                    return o.isoformat()
+                if isinstance(o, dict):
+                    return {k: _ser(v) for k, v in o.items()}
+                if isinstance(o, list):
+                    return [_ser(x) for x in o]
+                return str(o) if hasattr(o, "hex") else o
 
-        chat_messages = [
-            {"role": "system", "content": system_content},
-            *[{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages],
-        ]
+            # Only include key profile fields so the LLM knows what data exists in the database
+            profile_snapshot_fields = ("full_name", "email", "topics", "target_audiences", "speaking_formats", "delivery_mode", "talk_description")
+            profile_json = json.dumps({k: _ser(profile.get(k)) for k in profile_snapshot_fields if profile.get(k) is not None}, default=str)
+            steps_ctx = _get_steps_context()
+            system = (
+                "You are an expert onboarding assistant for the Human Driven AI platform. "
 
+                "Your ONLY job is to onboard speakers by collecting and completing their profile through conversational chat. "
+                "Do NOT help with anything outside onboarding. "
+
+                "Tone: Friendly, conversational, and professional. "
+
+                "EXISTING PROFILE CONTEXT: "
+                "A speaker profile already exists. Current profile data: "
+                + profile_json + ". "
+
+                "CRITICAL FUNCTION RULES: "
+                "Whenever the user provides ANY valid profile data, immediately call upsert_speaker_profile. "
+                "Always pass speaker_profile_id=\"" + str(speaker_profile_id) + "\". "
+                "Send ONLY the new or updated fields. "
+                "Call after EVERY valid answer. "
+
+                "CONVERSATION RULES: "
+                "Ask ONLY ONE question at a time. "
+                "Required fields cannot be skipped. "
+                "If user avoids answering, politely ask again. "
+                "If user provides multiple fields at once, extract and save all. "
+                "Adapt questions naturally using chat history and profile_json. "
+                "Stay focused ONLY on onboarding. "
+
+                "REQUIRED FIELD ORDER (STRICT): "
+                "You MUST collect required fields in EXACT order: topics, speaking_formats, delivery_mode, target_audiences. "
+
+                "ALLOWED VALUES (STRICT — DO NOT ACCEPT ANY OTHER VALUES): "
+
+                "TOPICS (User may choose multiple): "
+                "Executive Leadership, Nonprofit, Technology, Customer Experience, Financial Services, Human Resources (HR), Public Relations (PR), B2C, Developer, Marketing, Communications, Retail, AI, Data Science, Education, B2B, EdTech, E-Commerce, UX/UI, Women In Tech. "
+
+                "SPEAKING FORMAT: "
+                "Keynote, Panel Discussion, Workshop, Solo Talk. "
+
+                "DELIVERY MODE: "
+                "Virtual, In-person, Hybrid. "
+
+                "TARGET AUDIENCES (User may choose multiple): "
+                "General Audience, Managers, Technical Professionals, Sales Teams, Executives, Corporate Teams, Women Leaders, Startups, Small Businesses, HR Professionals, Entrepreneurs, Students. "
+
+                "VALIDATION RULES: "
+                "Accept ONLY values from lists above. "
+                "If user gives invalid values, politely say they must choose from available options. "
+                "Suggest closest valid matches if possible. "
+
+                "OPTIONAL FIELDS FLOW: "
+                "After required fields are completed, ask optional fields ONE at a time in this order: talk_description, linkedin_url, past_speaking_examples, video_links, key_takeaways. "
+
+                "IMPORTANT: "
+                "Do NOT say 'let's move to optional fields'. Continue naturally with next question. "
+
+                "PROFILE QUESTIONS: "
+                "If user asks about their profile, answer using profile_json only. "
+
+                "COMPLETION: "
+                "When all required fields are complete, confirm onboarding clearly and professionally."
+                )
+        else:
+            steps_ctx = _get_steps_context()
+            system = """
+                You are an expert onboarding assistant for the Human Driven AI platform.
+
+                Your ONLY job is to onboard new speakers by collecting their profile information through a conversational chat. Do not help with anything else outside onboarding.
+
+                Your tone should be:
+                Friendly, conversational, and professional.
+
+                You must collect the following information step-by-step.
+
+                REQUIRED FIELDS
+                1. Email (required – MUST be collected first)
+                2. Full Name (required)
+                3. Topics (required)
+                4. Speaking Format (required)
+                5. Delivery Mode (required)
+                6. Talk Description (optional)
+                7. Target Audience (required)
+
+                Important Conversation Rules
+
+                • Ask ONLY ONE question at a time.
+                • Required fields cannot be skipped.
+                • If the user avoids answering a required field, politely ask again.
+                • If the user provides multiple fields at once, extract and store them.
+                • Always guide the user to complete onboarding.
+
+                Email Rules
+
+                • Email must be collected first.
+                • Validate that it looks like a valid email address.
+                • Once email is received, immediately call the function `upsert_speaker_profile` to create the profile.
+
+                Data Saving
+
+                Use the function `upsert_speaker_profile` whenever new data is collected.
+
+                Call it:
+                • Immediately after email is collected
+                • After every additional field is captured
+
+                Fixed Choice Fields
+
+                The following fields MUST only contain values from the allowed lists below.  
+                Do NOT accept values outside these lists.
+
+                Topics (User may choose multiple)
+
+                Ask the user to select one or more from this list:
+
+                Executive Leadership  
+                Nonprofit  
+                Technology  
+                Customer Experience  
+                Financial Services  
+                Human Resources (HR)  
+                Public Relations (PR)  
+                B2C  
+                Developer  
+                Marketing  
+                Communications  
+                Retail  
+                AI  
+                Data Science  
+                Education  
+                B2B  
+                EdTech  
+                E-Commerce  
+                UX/UI  
+                Women In Tech
+
+                If the user provides a topic not in this list, politely say:
+
+                "Please choose topics from the available options."
+
+                Speaking Format (Choose ONE)
+
+                Keynote  
+                Panel Discussion  
+                Workshop  
+                Solo Talk
+
+                If the user provides a different answer, ask them to choose from the list.
+
+                Delivery Mode (Choose ONE)
+
+                Virtual  
+                In-person  
+                Hybrid
+
+                Target Audience (User may choose multiple)
+
+                General Audience  
+                Managers  
+                Technical Professionals  
+                Sales Teams  
+                Executives  
+                Corporate Teams  
+                Women Leaders  
+                Startups  
+                Small Businesses  
+                HR Professionals  
+                Entrepreneurs  
+                Students
+
+                When asking these questions, always show the available options.
+
+                Example:
+
+                "What topics do you usually speak about?  
+                You can choose one or more from the following:
+
+                • AI  
+                • Technology  
+                • Data Science  
+                • Marketing  
+                • Developer  
+                • UX/UI  
+                • Education  
+                • EdTech  
+                • E-Commerce  
+                • Retail  
+                • Customer Experience  
+                • Financial Services  
+                • Human Resources (HR)  
+                • Public Relations (PR)  
+                • B2C  
+                • B2B  
+                • Women In Tech  
+                • Executive Leadership  
+                • Nonprofit  
+                • Communications"
+
+                Talk Description
+
+                Ask the user to provide a short description of their talk or expertise. This field is optional.
+
+                Completion
+
+                Once all required fields are collected, confirm onboarding and summarize their profile.
+
+                Example closing message:
+
+                "Thanks! Your speaker profile has been successfully created on Human Driven AI. We're excited to have you as part of the platform."
+                """
+        tools = [_build_upsert_tool(speaker_profile_id), _build_get_allowed_values_tool()]
+        chat_messages = [{"role": "system", "content": system}, *messages]
         tool_results = []
-        max_rounds = 3
-        for _ in range(max_rounds):
+        for _ in range(3):
             completion = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=chat_messages,
-                tools=[UPSERT_TOOL_DEF],
+                tools=tools,
                 tool_choice="auto",
-                temperature=0.3,
+                temperature=0.25,
                 timeout=30,
             )
             msg = completion.choices[0].message
             if not msg:
                 break
-
-            assistant_msg_dict = {"role": "assistant", "content": msg.content or ""}
+            asst = {"role": "assistant", "content": msg.content or ""}
             if msg.tool_calls:
-                assistant_msg_dict["tool_calls"] = [
+                asst["tool_calls"] = [
                     {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"}}
                     for tc in msg.tool_calls
                 ]
-            chat_messages.append(assistant_msg_dict)
-
-            tool_calls = msg.tool_calls or []
-            if not tool_calls:
-                profile_out = None
-                action_out = None
-                if tool_results:
-                    last = tool_results[-1]
-                    profile_out = last["profile"]
-                    action_out = last["action"]
-                    if profile_out and "_id" in profile_out:
-                        profile_out["_id"] = str(profile_out["_id"])
-                return {
-                    "assistant_message": (msg.content or "").strip(),
-                    "profile": profile_out,
-                    "action": action_out,
-                }
-
-            for tc in tool_calls:
+            chat_messages.append(asst)
+            tcs = msg.tool_calls or []
+            if not tcs:
+                break
+            for tc in tcs:
+                try:
+                    tc_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    tc_args = {}
+                if tc.function.name == "get_allowed_values":
+                    vt = (tc_args.get("value_type") or "").strip().lower()
+                    allowed = _ALLOWED_VALUES_MAP.get(vt, [])
+                    chat_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"allowed_values": allowed}),
+                    })
+                    continue
                 if tc.function.name != "upsert_speaker_profile":
                     continue
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                tool_email = (args.get("email") or first_email).strip().lower()
-                if not tool_email:
-                    tool_email = first_email
-                profile_doc = await self._build_profile_doc(args)
-                result = await self._execute_upsert(tool_email, profile_doc, user_id)
+                spid = (tc_args.get("speaker_profile_id") or "").strip() or None
+                result = await self._execute_upsert(tc_args, spid or speaker_profile_id, user_id)
                 tool_results.append(result)
-                tool_msg = {
+                if result.get("profile"):
+                    profile = result["profile"]
+                    profile["_id"] = str(profile["_id"])
+                chat_messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": json.dumps({"action": result["action"], "profile_id": str(result["profile"].get("_id", ""))}),
-                }
-                chat_messages.append(tool_msg)
+                    "content": json.dumps({"action": result.get("action"), "profile_id": str(profile.get("_id", "")) if profile else ""}),
+                })
 
-        if not tool_results:
-            last_msg = chat_messages[-1] if chat_messages else {}
-            assistant_content = (last_msg.get("content", "") if isinstance(last_msg, dict) else "") or ""
-            return {
-                "assistant_message": assistant_content,
-                "profile": None,
-                "action": None,
-            }
+        action = None
+        if tool_results:
+            action = tool_results[-1].get("action")
+            if profile is None and tool_results[-1].get("profile"):
+                profile = tool_results[-1]["profile"]
+                profile["_id"] = str(profile["_id"])
 
-        last_result = tool_results[-1]
-        profile = last_result["profile"]
-        if profile and "_id" in profile:
-            profile["_id"] = str(profile["_id"])
+        assistant_content = ""
+        last = chat_messages[-1] if chat_messages else {}
+        if isinstance(last, dict) and last.get("role") == "assistant":
+            assistant_content = (last.get("content") or "").strip()
+        if not assistant_content or last.get("role") == "tool":
+            if action == "email_required":
+                assistant_content = "How can I assist you today to create a speaker profile? I'll need your email address to get started."
+            elif action == "created" and profile:
+                name = (profile.get("full_name") or "").strip() or "you"
+                email = (profile.get("email") or "").strip() or ""
+                prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + ". Then naturally ask for the first required field (topics - what topics they speak about) in a conversational way, reframed - do not ask the question verbatim."
+                try:
+                    s = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=chat_messages + [{"role": "user", "content": prompt}],
+                        temperature=0.5,
+                        timeout=15,
+                    )
+                    assistant_content = (s.choices[0].message.content or "").strip()
+                except Exception:
+                    pass
+                if not assistant_content:
+                    assistant_content = f"Your profile has been created for {name}" + (f" ({email})!" if email else "!") + f" What would you like to add? You can add: Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
+            else:
+                prompt = "Briefly tell the user what was done." if action == "created" else ("Briefly tell the user what was updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
+                if not assistant_content:
+                    try:
+                        s = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=chat_messages + [{"role": "user", "content": prompt}],
+                            temperature=0.5,
+                            timeout=15,
+                        )
+                        assistant_content = (s.choices[0].message.content or "").strip()
+                    except Exception:
+                        pass
+                if not assistant_content:
+                    assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
 
-        last_msg = chat_messages[-1] if chat_messages else {}
-        assistant_content = (last_msg.get("content", "") if isinstance(last_msg, dict) else "").strip()
-        if not assistant_content or last_msg.get("role") == "tool":
-            final = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=chat_messages + [
-                    {"role": "user", "content": f"Great, the profile was {last_result['action']}. Reply briefly and warmly to the user confirming what was saved."}
-                ],
-                temperature=0.5,
-                timeout=15,
-            )
-            assistant_content = (final.choices[0].message.content or "").strip() or "Your profile has been saved."
+        # ChatSession: create if new, else append
+        chunk = [{"role": "user", "content": message or ""}, {"role": "assistant", "content": assistant_content}]
+        if session:
+            await self.chat_session_model.append_messages(chat_session_id, chunk)
+            chat_session_id_out = chat_session_id
+            # If profile was just created and session had no speaker_profile_id, update session
+            if profile and action == "created":
+                existing_spid = (session.get("speaker_profile_id") or "").strip()
+                if not existing_spid and profile.get("_id"):
+                    await self.chat_session_model.update_speaker_profile_id(
+                        chat_session_id, str(profile["_id"])
+                    )
+        else:
+            spid_for_session = profile.get("_id") if profile else ""
+            new_sess = await self.chat_session_model.create_session(speaker_profile_id=spid_for_session, messages=chunk)
+            chat_session_id_out = new_sess["_id"]
+
+        # After any create/update: check mandatory fields. If all filled -> action = "completed"
+        if profile:
+            all_mandatory_filled = all(bool(profile.get(f)) for f in MANDATORY_FIELDS)
+            if all_mandatory_filled:
+                action = "completed"
+
         return {
             "assistant_message": assistant_content,
-            "profile": profile,
-            "action": last_result["action"],
+            "action": action,
+            "speaker_profile_id": profile.get("_id") if profile else None,
+            "chat_session_id": chat_session_id_out,
+            "profile_snapshot": profile,
         }
