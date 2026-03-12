@@ -20,6 +20,7 @@ from app.config.speaker_profile_chatbot import (
     OPTIONAL_FIELDS,
     OPTIONAL_FIELDS_DISPLAY,
 )
+from app.config.speaker_profile_steps import STEPS
 from app.models.SpeakerProfile import PROFILE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,52 @@ logger = logging.getLogger(__name__)
 _EMAIL_REGEX = re.compile(
     r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}"
 )
+
+# Steps for profile completion (excl. full_name, email). Required first, then optional.
+_CHATBOT_REQUIRED_STEPS = ["topics", "speaking_formats", "delivery_mode", "talk_description", "target_audiences"]
+_CHATBOT_OPTIONAL_STEPS = ["linkedin_url", "past_speaking_examples", "video_links", "key_takeaways"]
+
+_ALLOWED_VALUES_MAP = {
+    "topics": TOPICS,
+    "speaking_formats": SPEAKING_FORMATS,
+    "delivery_mode": DELIVERY_MODE,
+    "target_audiences": TARGET_AUDIENCES,
+}
+
+
+def _get_steps_context() -> str:
+    """Build context for LLM: step order, questions (for reframing), required vs optional."""
+    lines = []
+    for s in STEPS:
+        if s.step_name in ("full_name", "email"):
+            continue
+        req = "required" if s.required else "optional (user can skip)"
+        q = (s.question or "").replace("<br>", " ").strip()
+        lines.append(f"- {s.step_name} ({req}): reference question: \"{q}\"")
+    return "\n".join(lines) if lines else ""
+
+
+def _build_get_allowed_values_tool() -> dict:
+    """Tool for LLM to fetch valid options for topics, speaking_formats, delivery_mode, target_audiences."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_allowed_values",
+            "description": "Fetch the allowed/valid values for topics, speaking_formats, delivery_mode, or target_audiences. Call this BEFORE asking the user for these fields or validating their input. Use value_type to specify which field.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "value_type": {
+                        "type": "string",
+                        "enum": ["topics", "speaking_formats", "delivery_mode", "target_audiences"],
+                        "description": "Which field's allowed values to fetch.",
+                    },
+                },
+                "required": ["value_type"],
+            },
+        },
+    }
+
 
 def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
     """Build tool def. When speaker_profile_id_from_session is set, emphasize UPDATE with that id."""
@@ -56,11 +103,11 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                     },
                     "email": {"type": "string", "description": "Email"},
                     "full_name": {"type": "string", "description": "Full name"},
-                    "topics": {"type": "array", "items": {"type": "string"}, "description": f"From: {TOPICS}"},
-                    "speaking_formats": {"type": "array", "items": {"type": "string"}, "description": f"From: {SPEAKING_FORMATS}"},
-                    "delivery_mode": {"type": "array", "items": {"type": "string"}, "description": f"From: {DELIVERY_MODE}"},
+                    "topics": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='topics') first for valid options. Pass exact values only."},
+                    "speaking_formats": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='speaking_formats') first for valid options. Pass exact values only."},
+                    "delivery_mode": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='delivery_mode') first for valid options. Pass exact values only."},
                     "talk_description": {"type": "string"},
-                    "target_audiences": {"type": "array", "items": {"type": "string"}, "description": f"From: {TARGET_AUDIENCES}"},
+                    "target_audiences": {"type": "array", "items": {"type": "string"}, "description": "Call get_allowed_values(value_type='target_audiences') first for valid options. Pass exact values only."},
                     "linkedin_url": {"type": "string"},
                     "past_speaking_examples": {"type": "array", "items": {"type": "string"}},
                     "video_links": {"type": "array", "items": {"type": "string"}},
@@ -320,31 +367,29 @@ class SpeakerProfileChatbotService:
             # Only include key profile fields so the LLM knows what data exists in the database
             profile_snapshot_fields = ("full_name", "email", "topics", "target_audiences", "speaking_formats", "delivery_mode")
             profile_json = json.dumps({k: _ser(profile.get(k)) for k in profile_snapshot_fields if profile.get(k) is not None}, default=str)
+            steps_ctx = _get_steps_context()
             system = (
-                "You are a friendly assistant for Human Driven AI speaker profiles. Conversation should not look like user is filling out a form, but you MUST call upsert_speaker_profile to update the user's profile. "
+                "You are a friendly assistant for Human Driven AI speaker profiles. Guide the user through profile completion naturally - do NOT ask questions verbatim like a form. "
                 "A profile already exists. Current profile: " + profile_json + ". "
-                "CRITICAL: When the user provides ANY profile data (name, email, topics, linkedin_url, talk_description, etc.), "
-                "you MUST call upsert_speaker_profile with speaker_profile_id=\"" + str(speaker_profile_id) + "\" and the field(s) to update. "
-                "speaker_profile_id comes from the chat session and MUST be included in every tool call for updates. "
-                "Allowed values only - Topics: " + ", ".join(TOPICS) + ". Formats: " + ", ".join(SPEAKING_FORMATS) + ". "
-                "Delivery: " + ", ".join(DELIVERY_MODE) + ". Audiences: " + ", ".join(TARGET_AUDIENCES) + ". "
-                "IMPORTANT - Non-matching values: When the user provides topics, speaking_formats, delivery_mode, or target_audiences that are NOT in the allowed lists above but are similar/related to allowed values, you MUST specifically mention it. Say which value(s) they gave that we don't have, suggest the closest matching allowed value(s), and ask if they'd like to use those instead. Example: \"We don't have 'Leadership' in our topics, but we have 'Executive Leadership' which is close. Would you like me to add that?\" Only pass exact allowed values to the tool. "
-                "Say completed only when all mandatory fields are done. Then ask about optional fields they want to add. Optional Fields are: " + ", ".join(OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS) + ". "
-                "When user asks information related to their profile then use the profile data above."
+                "CRITICAL: When the user provides ANY profile data, call upsert_speaker_profile with speaker_profile_id=\"" + str(speaker_profile_id) + "\" and the field(s) to update. "
+                "For topics, speaking_formats, delivery_mode, target_audiences: call get_allowed_values first to get valid options - do NOT guess. Only pass exact values from that tool to upsert_speaker_profile. "
+                "If user gives values not in the allowed list, mention it and suggest closest matches. "
+                "Question flow (ask one at a time, reframe naturally based on chat history and profile):\n" + steps_ctx + "\n"
+                "Required fields (topics, speaking_formats, delivery_mode, talk_description, target_audiences) cannot be skipped. Optional fields (linkedin_url, past_speaking_examples, video_links, key_takeaways) - user can skip. Ask required first. "
+                "When all mandatory fields are done, do NOT say 'let's move on to optional fields' or list optional fields - directly ask the next question (first optional: linkedin_url, then past_speaking_examples, video_links, key_takeaways). Continue one question at a time. When user asks about their profile, use the profile data above."
             )
         else:
+            steps_ctx = _get_steps_context()
             system = (
-                "You are a friendly assistant for Human Driven AI. Conversation should not look like user is filling out a form. "
-                "The user has NO profile yet. Email is REQUIRED to create a profile. "
-                "If the user has NOT provided an email address, do NOT call upsert_speaker_profile - instead reply to their message in a friendly way AND remind them to provide their email (e.g. 'I'd be happy to help! To get started and create your speaker profile, please share your email address.'). "
+                "You are a friendly assistant for Human Driven AI. The user has NO profile yet. Email is REQUIRED to create a profile. "
+                "If the user has NOT provided an email address, do NOT call upsert_speaker_profile - instead respond to the user's message and ask them to provide their email address (e.g. reply to what they said, then say 'Please provide your email address so I can create your speaker profile.'). "
                 "ONLY call upsert_speaker_profile when the user provides an email. Extract email and optionally full_name from the message. "
-                "Allowed values only - Topics: " + ", ".join(TOPICS) + ". Formats: " + ", ".join(SPEAKING_FORMATS) + ". "
-                "Delivery: " + ", ".join(DELIVERY_MODE) + ". Audiences: " + ", ".join(TARGET_AUDIENCES) + ". "
-                "IMPORTANT - Non-matching values: When the user provides topics, speaking_formats, delivery_mode, or target_audiences that are NOT in the allowed lists above but are similar/related to allowed values, you MUST specifically mention it. Say which value(s) they gave that we don't have, suggest the closest matching allowed value(s), and ask if they'd like to use those instead. Example: \"We don't have 'Leadership' in our topics, but we have 'Executive Leadership' which is close. Would you like me to add that?\" Only pass exact allowed values to the tool. "
-                "After creating the profile, say 'Your profile has been created for [full_name] ([email])!' and ask what they'd like to add (Topics, Speaking formats, Delivery mode, Target audiences, Talk description)."
+                "After creating the profile, guide them through questions one by one (do NOT ask verbatim - reframe naturally). For topics, speaking_formats, delivery_mode, target_audiences: call get_allowed_values first. "
+                "Question flow (required first, then optional; user can skip optional):\n" + steps_ctx + "\n"
+                "After profile creation, ask the first unfilled required field (topics, speaking_formats, delivery_mode, talk_description, target_audiences) in a natural, conversational way."
             )
 
-        tools = [_build_upsert_tool(speaker_profile_id)]
+        tools = [_build_upsert_tool(speaker_profile_id), _build_get_allowed_values_tool()]
         chat_messages = [{"role": "system", "content": system}, *messages]
         tool_results = []
         for _ in range(3):
@@ -370,14 +415,23 @@ class SpeakerProfileChatbotService:
             if not tcs:
                 break
             for tc in tcs:
+                try:
+                    tc_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    tc_args = {}
+                if tc.function.name == "get_allowed_values":
+                    vt = (tc_args.get("value_type") or "").strip().lower()
+                    allowed = _ALLOWED_VALUES_MAP.get(vt, [])
+                    chat_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"allowed_values": allowed}),
+                    })
+                    continue
                 if tc.function.name != "upsert_speaker_profile":
                     continue
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                spid = (args.get("speaker_profile_id") or "").strip() or None
-                result = await self._execute_upsert(args, spid or speaker_profile_id, user_id)
+                spid = (tc_args.get("speaker_profile_id") or "").strip() or None
+                result = await self._execute_upsert(tc_args, spid or speaker_profile_id, user_id)
                 tool_results.append(result)
                 if result.get("profile"):
                     profile = result["profile"]
@@ -405,7 +459,7 @@ class SpeakerProfileChatbotService:
             elif action == "created" and profile:
                 name = (profile.get("full_name") or "").strip() or "you"
                 email = (profile.get("email") or "").strip() or ""
-                prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + f". Ask what they'd like to add and list the parameters Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
+                prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + ". Then naturally ask for the first required field (topics - what topics they speak about) in a conversational way, reframed - do not ask the question verbatim."
                 try:
                     s = client.chat.completions.create(
                         model="gpt-4o-mini",
