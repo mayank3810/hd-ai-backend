@@ -56,6 +56,29 @@ class ChatSessionModel:
         )
         return await self.get_by_id(chat_session_id)
 
+    async def update_speaker_profile_id(
+        self,
+        chat_session_id: str,
+        speaker_profile_id: str,
+    ) -> Optional[dict]:
+        """Update speaker_profile_id on an existing chat session (e.g. when profile is created in a follow-up call)."""
+        if not speaker_profile_id or not str(speaker_profile_id).strip():
+            return await self.get_by_id(chat_session_id)
+        try:
+            oid = ObjectId(chat_session_id)
+        except Exception:
+            return None
+        await self.collection.update_one(
+            {"_id": oid},
+            {
+                "$set": {
+                    "speaker_profile_id": str(speaker_profile_id).strip(),
+                    "updatedAt": datetime.utcnow(),
+                },
+            },
+        )
+        return await self.get_by_id(chat_session_id)
+
     async def get_by_id(self, chat_session_id: str) -> Optional[dict]:
         """Get chat session by id."""
         try:

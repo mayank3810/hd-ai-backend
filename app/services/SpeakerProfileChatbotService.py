@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import uuid
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -39,8 +38,9 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
         )
     else:
         desc = (
-            "Create new speaker profile. ALWAYS call this on the first message - even when user provides no name or email. "
-            "Extract name and/or email from user message when present. If neither found, omit both - backend creates with placeholder. Omit speaker_profile_id for create."
+            "Create new speaker profile. Call this ONLY when the user provides an email address. "
+            "Email is REQUIRED for profile creation. If the user has not provided email, do NOT call this - instead ask them for their email. "
+            "Extract email and optionally full_name from the user message. Omit speaker_profile_id for create."
         )
     return {
         "type": "function",
@@ -191,11 +191,6 @@ class SpeakerProfileChatbotService:
                 merged[k] = v
         return merged
 
-    def _is_synthetic_profile(self, profile: dict) -> bool:
-        """True if profile was created with placeholder email/name (no real user info)."""
-        email = (profile.get("email") or "").strip().lower()
-        return "@sample.com" in email or email.endswith("@sample.com")
-
     def _get_fields_to_add_message(self, profile: Optional[dict] = None) -> str:
         """Return list of parameters user can add, as readable text."""
         remaining_mandatory = []
@@ -252,11 +247,13 @@ class SpeakerProfileChatbotService:
             if refreshed:
                 updated = refreshed
             return {"action": "updated", "profile": updated}
-        # Create
-        email = (args.get("email") or "").strip().lower() or f"random-{uuid.uuid4().hex[:8]}@sample.com"
-        full_name = (args.get("full_name") or "").strip() or f"Random user {uuid.uuid4().hex[:4]}"
+        # Create - email is required
+        email = (args.get("email") or "").strip().lower()
+        if not email:
+            return {"action": "email_required", "profile": None}
+        full_name = (args.get("full_name") or "").strip()
         profile_doc["email"] = email
-        profile_doc["full_name"] = full_name
+        profile_doc["full_name"] = full_name or email.split("@")[0]  # Use email prefix if no name
         created = await self.profile_model.create_chatbot_profile(profile_doc, user_id)
         # After create: check mandatory fields; if all filled, set isCompleted=True
         spid = str(created.get("_id", ""))
@@ -273,9 +270,12 @@ class SpeakerProfileChatbotService:
         user_id: Optional[str] = None,
     ) -> dict:
         """
-        Simple flow:
-        - No session_id: LLM creates profile via tool (name/email or synthetic), then we create ChatSession.
-        - With session_id: load session + profile, LLM upserts via tool using speaker_profile_id.
+        Flow:
+        - No session_id: If message has no email, LLM asks for email; create ChatSession (no profile).
+          If message has email, LLM creates profile via tool; create ChatSession with speaker_profile_id.
+        - With session_id, no profile: Same - ask for email or create profile when email provided.
+          If profile created, update session with speaker_profile_id.
+        - With session_id + profile: LLM upserts via tool using speaker_profile_id.
         """
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -296,7 +296,7 @@ class SpeakerProfileChatbotService:
         if chat_session_id:
             session = await self.chat_session_model.get_by_id(chat_session_id)
             if session:
-                speaker_profile_id = session.get("speaker_profile_id")
+                speaker_profile_id = (session.get("speaker_profile_id") or "").strip() or None
                 if speaker_profile_id:
                     profile = await self.profile_model.get_profile(speaker_profile_id)
                     if profile:
@@ -329,20 +329,19 @@ class SpeakerProfileChatbotService:
                 "Allowed values only - Topics: " + ", ".join(TOPICS) + ". Formats: " + ", ".join(SPEAKING_FORMATS) + ". "
                 "Delivery: " + ", ".join(DELIVERY_MODE) + ". Audiences: " + ", ".join(TARGET_AUDIENCES) + ". "
                 "IMPORTANT - Non-matching values: When the user provides topics, speaking_formats, delivery_mode, or target_audiences that are NOT in the allowed lists above but are similar/related to allowed values, you MUST specifically mention it. Say which value(s) they gave that we don't have, suggest the closest matching allowed value(s), and ask if they'd like to use those instead. Example: \"We don't have 'Leadership' in our topics, but we have 'Executive Leadership' which is close. Would you like me to add that?\" Only pass exact allowed values to the tool. "
-                "When all mandatory fields are filled, check for email and name if they are in synthetic format (email: e.g. uniqueid@sample.com; name: e.g. Random user xxxx) and if so, ask user to update email and/or name. "
-                "Say completed only when mandatory fields are done AND email is not synthetic (@sample.com) AND name is not synthetic (Random user). Then ask about optional fields they want to add. Optional Fields are: " + ", ".join(OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS) + ". "
+                "Say completed only when all mandatory fields are done. Then ask about optional fields they want to add. Optional Fields are: " + ", ".join(OPTIONAL_FIELDS_DISPLAY.get(f, f) for f in OPTIONAL_FIELDS) + ". "
                 "When user asks information related to their profile then use the profile data above."
             )
         else:
             system = (
-                "You are a friendly assistant for Human Driven AI. Conversation should not look like user is filling out a form, but you MUST call upsert_speaker_profile to create a profile for the user. "
-                "The user has NO profile yet. You MUST ALWAYS call upsert_speaker_profile on the first message - even when the user does not provide name or email. "
-                "Extract name and/or email from the message if present. If neither name nor email found, omit both and call with no speaker_profile_id - backend will create with placeholder values. "
+                "You are a friendly assistant for Human Driven AI. Conversation should not look like user is filling out a form. "
+                "The user has NO profile yet. Email is REQUIRED to create a profile. "
+                "If the user has NOT provided an email address, do NOT call upsert_speaker_profile - instead reply to their message in a friendly way AND remind them to provide their email (e.g. 'I'd be happy to help! To get started and create your speaker profile, please share your email address.'). "
+                "ONLY call upsert_speaker_profile when the user provides an email. Extract email and optionally full_name from the message. "
                 "Allowed values only - Topics: " + ", ".join(TOPICS) + ". Formats: " + ", ".join(SPEAKING_FORMATS) + ". "
                 "Delivery: " + ", ".join(DELIVERY_MODE) + ". Audiences: " + ", ".join(TARGET_AUDIENCES) + ". "
                 "IMPORTANT - Non-matching values: When the user provides topics, speaking_formats, delivery_mode, or target_audiences that are NOT in the allowed lists above but are similar/related to allowed values, you MUST specifically mention it. Say which value(s) they gave that we don't have, suggest the closest matching allowed value(s), and ask if they'd like to use those instead. Example: \"We don't have 'Leadership' in our topics, but we have 'Executive Leadership' which is close. Would you like me to add that?\" Only pass exact allowed values to the tool. "
-                "After creating with real name/email, say 'Your profile has been created for [full_name] ([email])!' and ask what they'd like to add. "
-                "When you created with placeholder (no name/email from user), the response must be: 'Hi! I have created a Speaker profile for you but with name (random name created to save in speaker profile) with mail (random mail created to save in speaker profile), please update your name and email or continue to profile creation.' - the backend provides the actual placeholder values in the tool result. Always include name and email in the tool call when you have them."
+                "After creating the profile, say 'Your profile has been created for [full_name] ([email])!' and ask what they'd like to add (Topics, Speaking formats, Delivery mode, Target audiences, Talk description)."
             )
 
         tools = [_build_upsert_tool(speaker_profile_id)]
@@ -396,31 +395,17 @@ class SpeakerProfileChatbotService:
                 profile = tool_results[-1]["profile"]
                 profile["_id"] = str(profile["_id"])
 
-        # Fallback: no session + message but LLM didn't call tool - create profile with synthetic email/name
-        if not chat_session_id and message and profile is None:
-            result = await self._execute_upsert({}, None, user_id)
-            action = result.get("action")
-            if result.get("profile"):
-                profile = result["profile"]
-                profile["_id"] = str(profile["_id"])
-
         assistant_content = ""
         last = chat_messages[-1] if chat_messages else {}
         if isinstance(last, dict) and last.get("role") == "assistant":
             assistant_content = (last.get("content") or "").strip()
         if not assistant_content or last.get("role") == "tool":
-            if action == "created" and profile:
-                if self._is_synthetic_profile(profile):
-                    name = (profile.get("full_name") or "").strip() or "Random user"
-                    email = (profile.get("email") or "").strip() or ""
-                    assistant_content = f"Hi! I have created a Speaker profile for you but with name {name} with mail {email}, please update your name and email or continue to profile creation."
-                else:
-                    name = (profile.get("full_name") or "").strip() or "you"
-                    email = (profile.get("email") or "").strip() or ""
-                    prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + f". Ask what they'd like to add and list the parameters Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
-            else:
-                prompt = "Briefly tell the user what was done." if action == "created" else "Briefly tell the user what was updated."
-            if not assistant_content:
+            if action == "email_required":
+                assistant_content = "Please provide your email address so I can create your speaker profile."
+            elif action == "created" and profile:
+                name = (profile.get("full_name") or "").strip() or "you"
+                email = (profile.get("email") or "").strip() or ""
+                prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + f". Ask what they'd like to add and list the parameters Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
                 try:
                     s = client.chat.completions.create(
                         model="gpt-4o-mini",
@@ -431,41 +416,46 @@ class SpeakerProfileChatbotService:
                     assistant_content = (s.choices[0].message.content or "").strip()
                 except Exception:
                     pass
-            if not assistant_content:
-                if action == "created" and profile:
-                    if self._is_synthetic_profile(profile):
-                        name = (profile.get("full_name") or "").strip() or "Random user"
-                        email = (profile.get("email") or "").strip() or ""
-                        assistant_content = f"Hi! I have created a Speaker profile for you but with name {name} with mail {email}, please update your name and email or continue to profile creation."
-                    else:
-                        name = (profile.get("full_name") or "").strip() or "you"
-                        email = (profile.get("email") or "").strip()
-                        assistant_content = f"Your profile has been created for {name}" + (f" ({email})!" if email else "!") + f" What would you like to add? You can add: Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
-                else:
-                    assistant_content = "Your profile has been created!" if action == "created" else "Your profile has been updated."
-
-        # Override: when profile was created with synthetic name/email, always use our exact message with actual values (LLM doesn't receive these in tool result)
-        if action == "created" and profile and self._is_synthetic_profile(profile):
-            name = (profile.get("full_name") or "").strip() or "Random user"
-            email = (profile.get("email") or "").strip() or ""
-            assistant_content = f"Hi! I have created a Speaker profile for you but with name {name} with mail {email}, please update your name and email or continue to profile creation."
+                if not assistant_content:
+                    assistant_content = f"Your profile has been created for {name}" + (f" ({email})!" if email else "!") + f" What would you like to add? You can add: Topics, Speaking formats, Delivery mode, Target audiences, Talk description."
+            else:
+                prompt = "Briefly tell the user what was done." if action == "created" else ("Briefly tell the user what was updated." if action == "updated" else "Ask the user for their email address to create their speaker profile.")
+                if not assistant_content:
+                    try:
+                        s = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=chat_messages + [{"role": "user", "content": prompt}],
+                            temperature=0.5,
+                            timeout=15,
+                        )
+                        assistant_content = (s.choices[0].message.content or "").strip()
+                    except Exception:
+                        pass
+                if not assistant_content:
+                    assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "To get started, please share your email address so I can create your speaker profile.")
 
         # ChatSession: create if new, else append
         chunk = [{"role": "user", "content": message or ""}, {"role": "assistant", "content": assistant_content}]
         if session:
             await self.chat_session_model.append_messages(chat_session_id, chunk)
             chat_session_id_out = chat_session_id
+            # If profile was just created and session had no speaker_profile_id, update session
+            if profile and action == "created":
+                existing_spid = (session.get("speaker_profile_id") or "").strip()
+                if not existing_spid and profile.get("_id"):
+                    await self.chat_session_model.update_speaker_profile_id(
+                        chat_session_id, str(profile["_id"])
+                    )
         else:
             spid_for_session = profile.get("_id") if profile else ""
             new_sess = await self.chat_session_model.create_session(speaker_profile_id=spid_for_session, messages=chunk)
             chat_session_id_out = new_sess["_id"]
 
-        # After any create/update: check mandatory fields. If all filled AND not synthetic name/email -> action = "completed"
+        # After any create/update: check mandatory fields. If all filled -> action = "completed"
         if profile:
             all_mandatory_filled = all(bool(profile.get(f)) for f in MANDATORY_FIELDS)
-            if all_mandatory_filled and not self._is_synthetic_profile(profile):
+            if all_mandatory_filled:
                 action = "completed"
-            # else: keep action as "created" or "updated" from tool result
 
         return {
             "assistant_message": assistant_content,
