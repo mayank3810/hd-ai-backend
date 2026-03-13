@@ -41,6 +41,15 @@ class GoogleQueryScraperService:
     async def get_google_query_by_id(self, google_query_id: str, user_id: Optional[str] = None):
         return await self.google_query_model.get_by_id(google_query_id, user_id=user_id)
 
+    async def get_list(self, user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> dict:
+        """List GoogleQueries with pagination. Filter by user_id when provided."""
+        items = await self.google_query_model.get_list(user_id=user_id, skip=skip, limit=limit)
+        total = await self.google_query_model.count(user_id=user_id)
+        # Serialize _id for JSON
+        for doc in items:
+            doc["_id"] = str(doc["_id"])
+        return {"googleQueries": items, "total": total}
+
     async def run_query_serp_and_scrape(self, google_query_id: str, query: str, user_id: Optional[str] = None) -> None:
         logger.info("GoogleQuery background job started google_query_id=%s query=%s", google_query_id, query[:120])
         await self.google_query_model.update_by_id(

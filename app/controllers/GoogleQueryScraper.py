@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from app.dependencies import get_google_query_scraper_service
 from app.helpers.Utilities import Utils
@@ -7,6 +7,27 @@ from app.schemas.GoogleQuery import GoogleQueryCreateSchema
 from app.schemas.ServerResponse import ServerResponse
 
 router = APIRouter(prefix="/api/v1/google-query-scraper", tags=["Google Query Scraper"])
+
+
+@router.get("/get-all-google-queries", response_model=ServerResponse)
+async def get_all_google_queries(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    service=Depends(get_google_query_scraper_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """List all Google queries for the current user with pagination."""
+    try:
+        user_id = jwt_payload.get("id")
+        result = await service.get_list(user_id=user_id, skip=skip, limit=limit)
+        return Utils.create_response(result, True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
 
 
 @router.post("/search", response_model=ServerResponse, status_code=201)
