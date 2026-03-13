@@ -38,6 +38,7 @@ _chat_session_model = None
 _speaker_profile_chatbot_service = None
 _scraper_service = None
 _url_scraper_rapidapi_service = None
+_google_query_scraper_service = None
 _opportunity_service = None
 
 
@@ -138,6 +139,15 @@ def get_url_scraper_rapidapi_service():
     return _url_scraper_rapidapi_service
 
 
+def get_google_query_scraper_service():
+    """Get singleton GoogleQueryScraperService instance (GoogleQueries + SERP + UrlCollection flow)."""
+    global _google_query_scraper_service
+    if _google_query_scraper_service is None:
+        from app.services.GoogleQueryScraper import GoogleQueryScraperService
+        _google_query_scraper_service = GoogleQueryScraperService()
+    return _google_query_scraper_service
+
+
 def get_opportunity_service():
     """Get singleton OpportunityService instance."""
     global _opportunity_service
@@ -158,7 +168,7 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _chat_session_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _opportunity_service
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _chat_session_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _google_query_scraper_service, _opportunity_service
 
     # Reset all services
     _auth_service = None
@@ -194,4 +204,5 @@ def cleanup_resources():
     _speaker_profile_chatbot_service = None
     _scraper_service = None
     _url_scraper_rapidapi_service = None
+    _google_query_scraper_service = None
     _opportunity_service = None
