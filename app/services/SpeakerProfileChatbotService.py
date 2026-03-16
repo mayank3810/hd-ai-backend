@@ -77,6 +77,35 @@ def _build_get_allowed_values_tool() -> dict:
     }
 
 
+def _build_mark_profile_complete_tool(speaker_profile_id: Optional[str] = None) -> dict:
+    """Tool for LLM to mark profile complete only after ALL questions (required + optional) are asked."""
+    desc = (
+        "Call this ONLY when you have asked for ALL profile fields: "
+        "first every required field (topics, speaking_formats, delivery_mode, target_audiences), "
+        "then every optional field (talk_description, linkedin_url, past_speaking_examples, video_links, key_takeaways) one by one. "
+        "You MUST ask each optional question; if the user skips or declines, acknowledge and move to the next optional question. "
+        "After you have asked the last optional question and the user has either answered or skipped it, call this once to mark the profile complete. "
+        "Do NOT call this when only required fields are done—you must ask all optional questions first (user may skip, but you must ask and move on)."
+    )
+    return {
+        "type": "function",
+        "function": {
+            "name": "mark_profile_complete",
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "speaker_profile_id": {
+                        "type": "string",
+                        "description": "Required. The speaker profile id from the chat session.",
+                    },
+                },
+                "required": ["speaker_profile_id"],
+            },
+        },
+    }
+
+
 def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
     """Build tool def. When speaker_profile_id_from_session is set, emphasize UPDATE with that id."""
     if speaker_profile_id_from_session:
@@ -260,12 +289,8 @@ class SpeakerProfileChatbotService:
         """Check if all MANDATORY_FIELDS are filled in the profile."""
         return all(bool(profile.get(f)) for f in MANDATORY_FIELDS)
 
-    async def _set_completed_if_mandatory_filled(
-        self, speaker_profile_id: str, profile: dict
-    ) -> Optional[dict]:
-        """If all mandatory fields are filled, set isCompleted=True on the profile. Returns updated profile or None."""
-        if not self._all_mandatory_filled(profile):
-            return None
+    async def _set_profile_completed(self, speaker_profile_id: str) -> Optional[dict]:
+        """Set isCompleted=True on the profile. Called only when mark_profile_complete tool is invoked."""
         return await self.profile_model.update_profile(
             speaker_profile_id,
             {"isCompleted": True},
@@ -291,10 +316,7 @@ class SpeakerProfileChatbotService:
                 updated = await self.profile_model.update_profile(speaker_profile_id, updates)
                 if not updated:
                     return {"action": "error", "profile": None}
-            # After every update: check mandatory fields; if all filled, set isCompleted=True
-            refreshed = await self._set_completed_if_mandatory_filled(speaker_profile_id, updated)
-            if refreshed:
-                updated = refreshed
+            # isCompleted is set only when LLM calls mark_profile_complete (after all questions done)
             return {"action": "updated", "profile": updated}
         # Create - email is required
         email = (args.get("email") or "").strip().lower()
@@ -304,12 +326,7 @@ class SpeakerProfileChatbotService:
         profile_doc["email"] = email
         profile_doc["full_name"] = full_name or email.split("@")[0]  # Use email prefix if no name
         created = await self.profile_model.create_chatbot_profile(profile_doc, user_id)
-        # After create: check mandatory fields; if all filled, set isCompleted=True
-        spid = str(created.get("_id", ""))
-        if spid:
-            refreshed = await self._set_completed_if_mandatory_filled(spid, created)
-            if refreshed:
-                created = refreshed
+        # isCompleted is set only when LLM calls mark_profile_complete (after all questions done)
         return {"action": "created", "profile": created}
 
     async def process_chat(
@@ -375,8 +392,14 @@ class SpeakerProfileChatbotService:
 
                 "Your ONLY job is to onboard speakers by collecting and completing their profile through conversational chat. "
                 "Do NOT help with anything outside onboarding. "
+                "Do NOT offer help with unrelated topics. "
+                "Do NOT say phrases like 'I can help with anything else', 'let me know if you need anything', or similar. "
+                "If a user asks something unrelated to onboarding, politely redirect them back to completing their speaker profile. "
+                "Always stay focused strictly on onboarding."
 
-                "Tone: Friendly, conversational, and professional. "
+                "Tone: Strictly Friendly, conversational, and professional. "
+
+                "Whenever listing options or structured information, strictly format the response as bullet points."       
 
                 "EXISTING PROFILE CONTEXT: "
                 "A speaker profile already exists. Current profile data: "
@@ -395,6 +418,7 @@ class SpeakerProfileChatbotService:
                 "If user provides multiple fields at once, extract and save all. "
                 "Adapt questions naturally using chat history and profile_json. "
                 "Stay focused ONLY on onboarding. "
+                "Never announce that required fields are done or that you are moving to optional questions—just ask the next question with no preceding sentence. "
 
                 "REQUIRED FIELD ORDER (STRICT): "
                 "You MUST collect required fields in EXACT order: topics, speaking_formats, delivery_mode, target_audiences. "
@@ -419,23 +443,54 @@ class SpeakerProfileChatbotService:
                 "Suggest closest valid matches if possible. "
 
                 "OPTIONAL FIELDS FLOW: "
-                "After required fields are completed, ask optional fields ONE at a time in this order: talk_description, linkedin_url, past_speaking_examples, video_links, key_takeaways. "
+                "When ALL required fields are completed, IMMEDIATELY continue by asking the first optional question. "
+                "Ask EACH optional field ONE at a time in this exact order: talk_description, linkedin_url, past_speaking_examples, video_links, key_takeaways. "
 
-                "IMPORTANT: "
-                "Do NOT say 'let's move to optional fields'. Continue naturally with next question. "
+                "CRITICAL BEHAVIOR RULE: "
+                "When transitioning from required fields to optional fields, you MUST directly ask the next question with NO transition text. "
+                "Your message must contain ONLY the question itself. No prefix. No explanation. No acknowledgment. No filler. "
+
+                "STRICTLY FORBIDDEN: "
+                "Do NOT say any sentence that mentions required fields, optional fields, completion, or transition. "
+                "Never say phrases like: "
+                "'Now that we have all the required fields', "
+                "'Let’s move to optional questions', "
+                "'Let’s move on', "
+                "'Next, I will ask', "
+                "'All required fields are done', "
+                "'Mandatory fields complete', "
+                "'Now the optional part'. "
+
+                "RESPONSE FORMAT RULE: "
+                "When it is time for an optional question, output ONLY the question. "
+                "Example (correct): 'What would you like to include as a description of your talk?' "
+                "Example (incorrect): 'Now that we’re done, what would you like to include as a description of your talk?' "
+
+                "SKIP HANDLING: "
+                "If the user skips or declines an optional field, briefly acknowledge (e.g., 'No problem.') and IMMEDIATELY ask the next optional question. "
+
+                "COMPLETION RULE: "
+                "Do NOT call mark_profile_complete until AFTER the final optional question (key_takeaways) has been asked."
+
+                "PROFILE COMPLETION: "
+                "Only after you have ASKED for ALL fields (every required and every optional)—with each optional either answered or skipped (you moved to next)—call the tool mark_profile_complete with speaker_profile_id. "
+                "Then respond with ONLY a short profile completion message (e.g. that their speaker profile is complete and thank them). "
+                "Do NOT add any offer to help further, e.g. do NOT say 'How can I assist you?', 'Let me know if you need anything', 'What else can I help with?', or similar. End with the completion message only. "
 
                 "PROFILE QUESTIONS: "
                 "If user asks about their profile, answer using profile_json only. "
-
-                "COMPLETION: "
-                "When all required fields are complete, confirm onboarding clearly and professionally."
                 )
         else:
             steps_ctx = _get_steps_context()
             system = """
                 You are an expert onboarding assistant for the Human Driven AI platform.
 
-                Your ONLY job is to onboard new speakers by collecting their profile information through a conversational chat. Do not help with anything else outside onboarding.
+                "Your ONLY job is to onboard speakers by collecting and completing their profile through conversational chat. "
+                "Do NOT help with anything outside onboarding. "
+                "Do NOT offer help with unrelated topics. "
+                "Do NOT say phrases like 'I can help with anything else', 'let me know if you need anything', or similar. "
+                "If a user asks something unrelated to onboarding, politely redirect them back to completing their speaker profile. "
+                "Always stay focused strictly on onboarding."
 
                 Your tone should be:
                 Friendly, conversational, and professional.
@@ -569,17 +624,20 @@ class SpeakerProfileChatbotService:
 
                 Ask the user to provide a short description of their talk or expertise. This field is optional.
 
+                Optional fields flow
+
+                After all required fields are collected, you MUST ask each optional field one at a time: talk_description, linkedin_url, past_speaking_examples, video_links, key_takeaways. You must ask every optional question. If the user skips or declines, acknowledge and move to the next optional question. Only after you have asked the last optional question (user answered or skipped) may you call mark_profile_complete. FORBIDDEN: Never say 'Now that we have all the required fields', 'Let\'s move on to optional questions', 'Let\'s move on to some optional questions', or any sentence that announces required vs optional. When it is time for the next question (e.g. talk description), output ONLY that question—no preceding sentence.
+
                 Completion
 
-                Once all required fields are collected, confirm onboarding and summarize their profile.
-
-                Example closing message:
-
-                "Thanks! Your speaker profile has been successfully created on Human Driven AI. We're excited to have you as part of the platform."
+                Only after you have asked all questions for all fields (required + optional; each optional either answered or skipped—you moved on), say ONLY a short profile completion message (e.g. that their speaker profile is complete and thank them). Do NOT add 'How can I assist you?', 'Let me know if you need anything', or similar—end with the completion message only.
                 """
         tools = [_build_upsert_tool(speaker_profile_id), _build_get_allowed_values_tool()]
+        if speaker_profile_id:
+            tools.append(_build_mark_profile_complete_tool(speaker_profile_id))
         chat_messages = [{"role": "system", "content": system}, *messages]
         tool_results = []
+        profile_marked_complete = False
         for _ in range(3):
             completion = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -614,6 +672,19 @@ class SpeakerProfileChatbotService:
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": json.dumps({"allowed_values": allowed}),
+                    })
+                    continue
+                if tc.function.name == "mark_profile_complete":
+                    spid = (tc_args.get("speaker_profile_id") or "").strip() or speaker_profile_id
+                    if spid and self._all_mandatory_filled(profile or {}):
+                        await self._set_profile_completed(spid)
+                        profile_marked_complete = True
+                        if profile:
+                            profile["isCompleted"] = True
+                    chat_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"success": True, "message": "Profile marked complete."}),
                     })
                     continue
                 if tc.function.name != "upsert_speaker_profile":
@@ -674,7 +745,10 @@ class SpeakerProfileChatbotService:
                     except Exception:
                         pass
                 if not assistant_content:
-                    assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
+                    if profile_marked_complete:
+                        assistant_content = "Your speaker profile is complete. Thank you!"
+                    else:
+                        assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
 
         # ChatSession: create if new, else append
         chunk = [{"role": "user", "content": message or ""}, {"role": "assistant", "content": assistant_content}]
@@ -693,11 +767,9 @@ class SpeakerProfileChatbotService:
             new_sess = await self.chat_session_model.create_session(speaker_profile_id=spid_for_session, messages=chunk)
             chat_session_id_out = new_sess["_id"]
 
-        # After any create/update: check mandatory fields. If all filled -> action = "completed"
-        if profile:
-            all_mandatory_filled = all(bool(profile.get(f)) for f in MANDATORY_FIELDS)
-            if all_mandatory_filled:
-                action = "completed"
+        # Set action = "completed" only when profile was explicitly marked complete (all questions done)
+        if profile_marked_complete:
+            action = "completed"
 
         return {
             "assistant_message": assistant_content,
