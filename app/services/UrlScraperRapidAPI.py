@@ -3,11 +3,12 @@ Service for scraping URLs via RapidAPI and storing opportunities.
 Flow: Save url+createdAt to UrlCollection -> background task scrapes -> updates sourceName/description -> extracts via LLM -> inserts opportunities into Opportunities collection.
 No connection with existing Scraper/Scrapers collection.
 Blocking I/O (RapidAPI requests, OpenAI) runs in a thread pool to avoid blocking the event loop.
+PDF URLs are not scraped. Only opportunities with all required fields (link, event_name, location, topics, date, speaking_format, delivery_mode, target_audiences) are saved.
 """
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from app.models.UrlCollection import UrlCollectionModel
@@ -24,17 +25,61 @@ TEDX_CRON_TOP_N = 5
 logger = logging.getLogger(__name__)
 
 DESCRIPTION_MAX_LENGTH = 500
+# UrlCollection requires a non-empty description; use this when scrape returns none
+DESCRIPTION_FALLBACK = "Scraped page"
+
+
+def is_pdf_url(url: str) -> bool:
+    """True if URL path ends with .pdf (case-insensitive), ignoring query/fragment."""
+    if not url or not isinstance(url, str):
+        return False
+    path = (urlparse(url.strip()).path or "").rstrip("/")
+    return path.lower().endswith(".pdf")
+
+
+def filter_complete_opportunities(opportunities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Keep only opportunities that have all required fields filled (link, event_name, location,
+    topics, date, speaking_format, delivery_mode, target_audiences). If LLM couldn't find any,
+    the opportunity is not added to the collection.
+    """
+    result = []
+    for opp in opportunities:
+        link = (opp.get("link") or opp.get("url") or "").strip()
+        event_name = (opp.get("event_name") or opp.get("title") or "").strip()
+        location = (opp.get("location") or "").strip()
+        topics = opp.get("topics")
+        date_val = opp.get("date")
+        speaking_format = (opp.get("speaking_format") or "").strip()
+        delivery_mode = (opp.get("delivery_mode") or "").strip()
+        target_audiences = opp.get("target_audiences")
+
+        if not link or not event_name or not location:
+            continue
+        if not isinstance(topics, list) or len(topics) == 0:
+            continue
+        if date_val is None or not str(date_val).strip():
+            continue
+        if not speaking_format or not delivery_mode:
+            continue
+        if not isinstance(target_audiences, list):
+            continue
+        result.append(opp)
+    return result
 
 
 def _sync_scrape_extract_enrich(url: str, delay_seconds: float = 0) -> Optional[dict]:
     """
     Synchronous scrape + LLM extract + enrich. Runs in thread pool to avoid blocking event loop.
     Returns dict with keys: source_name, description, opportunities; or None on failure.
+    Does not scrape URLs that end with .pdf.
 
     Args:
         url: URL to scrape
         delay_seconds: Optional delay before each RapidAPI call (e.g. 5 to avoid rate limits). Default 0.
     """
+    if is_pdf_url(url):
+        return None
     scraper = RapidAPIScraper(delay_seconds=delay_seconds)
     extractor = SpeakingOpportunityExtractor()
     enricher = EventDetailEnricherAgent(rapidapi_scraper=scraper)
@@ -50,7 +95,9 @@ def _sync_scrape_extract_enrich(url: str, delay_seconds: float = 0) -> Optional[
     if not source_name:
         parsed = urlparse(url)
         source_name = parsed.netloc or parsed.path or "unknown"
-    description = data.get("description") or ""
+    description = (data.get("description") or "").strip()
+    if not description:
+        description = source_name or DESCRIPTION_FALLBACK
     if len(description) > DESCRIPTION_MAX_LENGTH:
         description = description[:DESCRIPTION_MAX_LENGTH] + "..."
 
@@ -74,16 +121,23 @@ class UrlScraperRapidAPIService:
         self.opportunity_model = OpportunityModel()
         self.enricher_agent = EventDetailEnricherAgent()
 
-    async def create_url_scrape_job(self, url: str, user_id: str = None) -> str:
+    async def create_url_scrape_job(self, url: str, user_id: str = None, topics: Optional[list] = None) -> str:
         """
         Save url and createdAt to UrlCollection. sourceName and description are updated after RapidAPI scrape.
+        topics is optional; when provided, stored on the document for reference (allowed values from speaker_profile_chatbot.TOPICS).
+        Raises ValueError if url ends with .pdf (PDFs are not scraped).
         """
+        if is_pdf_url(url):
+            raise ValueError("PDF URLs are not scraped")
         doc = {
             "url": url,
+            "status": "pending",
             "createdAt": datetime.utcnow(),
         }
         if user_id:
             doc["userId"] = user_id
+        if topics is not None and len(topics) > 0:
+            doc["topics"] = topics
         inserted_id = await self.url_collection_model.create(doc)
         logger.info("UrlCollection created url_collection_id=%s url=%s", inserted_id, url[:80])
         return inserted_id
@@ -127,36 +181,65 @@ class UrlScraperRapidAPIService:
         """
         logger.info("Background job started url_collection_id=%s url=%s", url_collection_id, url[:80])
         try:
+            if is_pdf_url(url):
+                logger.info("Skipping PDF URL url_collection_id=%s", url_collection_id)
+                await self.url_collection_model.update_by_id(url_collection_id, {"status": "failed"})
+                return
             # Run blocking work (RapidAPI, OpenAI, enricher) in thread pool - prevents blocking event loop
             parsed = await asyncio.to_thread(_sync_scrape_extract_enrich, url, delay_seconds)
             if parsed is None:
                 logger.error("Job %s scrape/extract failed", url_collection_id)
+                await self.url_collection_model.update_by_id(url_collection_id, {"status": "failed"})
                 return
 
             source_name = parsed["source_name"]
             description = parsed["description"]
             opportunities = parsed["opportunities"]
 
-            # Async DB ops run in main event loop
+            complete = filter_complete_opportunities(opportunities)
+            dropped = len(opportunities) - len(complete)
+            if dropped:
+                logger.info("Job %s: dropped %d opportunities missing required fields (link, event_name, location, topics, date, speaking_format, delivery_mode, target_audiences)", url_collection_id, dropped)
+
+            # Unique topics from saved opportunities, for UrlCollection
+            extracted_topics = sorted(
+                set(
+                    str(t).strip()
+                    for opp in complete
+                    for t in (opp.get("topics") or [])
+                    if t and str(t).strip()
+                )
+            )
+
+            # Description is compulsory for UrlCollection; use fallback if empty
+            description_for_db = (description or "").strip() or DESCRIPTION_FALLBACK
+
+            # Async DB ops: update UrlCollection with sourceName, description, status, and extracted topics
             await self.url_collection_model.update_by_id(url_collection_id, {
                 "sourceName": source_name,
-                "description": description,
+                "description": description_for_db,
+                "status": "completed",
+                "topics": extracted_topics,
             })
 
             if not opportunities:
                 logger.info("Job %s completed with 0 opportunities", url_collection_id)
                 return
 
-            for opp in opportunities:
+            for opp in complete:
                 if "metadata" not in opp or not isinstance(opp["metadata"], dict):
                     opp["metadata"] = {}
                 opp["metadata"]["sourceUrl"] = url
                 opp["metadata"]["urlCollectionId"] = url_collection_id
 
-            inserted_ids = await self.opportunity_model.insert_many(opportunities)
-            logger.info("Job %s completed: inserted %d opportunities into Opportunities collection", url_collection_id, len(inserted_ids))
+            if complete:
+                inserted_ids = await self.opportunity_model.insert_many(complete)
+                logger.info("Job %s completed: inserted %d opportunities into Opportunities collection", url_collection_id, len(inserted_ids))
+            else:
+                logger.info("Job %s completed with 0 opportunities to insert (all incomplete)", url_collection_id)
         except Exception as e:
             logger.exception("Job %s failed: %s", url_collection_id, e)
+            await self.url_collection_model.update_by_id(url_collection_id, {"status": "failed"})
 
     async def _run_tedx_cron_async(self) -> None:
         """
@@ -168,7 +251,8 @@ class UrlScraperRapidAPIService:
         try:
             serp = SerpHelper()
             urls = serp.search(TEDX_CRON_QUERY)
-            top_urls = urls[:TEDX_CRON_TOP_N]
+            non_pdf = [u for u in (urls or []) if not is_pdf_url(u)]
+            top_urls = non_pdf[:TEDX_CRON_TOP_N]
             if not top_urls:
                 logger.warning("TedX cron: no URLs from SERP for query=%s", TEDX_CRON_QUERY)
                 return

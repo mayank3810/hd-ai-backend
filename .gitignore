@@ -20,3 +20,4 @@ primary_industry_slug.json
 region_slug.json
 secondary_industry_slug.json
 topic_slug.json
+process_pending_url_collections.py

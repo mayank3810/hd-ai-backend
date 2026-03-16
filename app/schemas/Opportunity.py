@@ -24,3 +24,4 @@ class UrlScrapeCreateSchema(BaseModel):
     """Schema for creating a URL scrape job."""
 
     url: str
+    topics: Optional[List[str]] = None  # Optional; allowed values from speaker_profile_chatbot.TOPICS

@@ -51,3 +51,11 @@ class GoogleQueryModel:
             query["userId"] = user_id
         return await self.collection.count_documents(query)
 
+    async def delete_by_id(self, google_query_id: str, user_id: str | None = None) -> bool:
+        """Delete a GoogleQuery by _id. Optionally restrict to user_id (own record only)."""
+        query = {"_id": ObjectId(google_query_id)}
+        if user_id is not None:
+            query["userId"] = user_id
+        result = await self.collection.delete_one(query)
+        return result.deleted_count > 0
+

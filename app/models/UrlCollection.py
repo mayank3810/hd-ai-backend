@@ -28,6 +28,18 @@ class UrlCollectionModel:
         )
         return result.modified_count > 0
 
+    async def get_pending(self, limit: int = 5, sort_by: dict = None) -> list[dict]:
+        """Get UrlCollection entries with status \"pending\" (or no status for backward compatibility). Oldest first. For cron job."""
+        if sort_by is None:
+            sort_by = {"createdAt": 1}
+        query = {"$or": [{"status": "pending"}, {"status": {"$exists": False}}]}
+        cursor = (
+            self.collection.find(query)
+            .sort(list(sort_by.items()))
+            .limit(limit)
+        )
+        return [doc async for doc in cursor]
+
     async def get_list(self, user_id: str = None, skip: int = 0, limit: int = 100, sort_by: dict = None) -> list[dict]:
         """Get UrlCollection entries with pagination. Optionally filter by user_id."""
         if sort_by is None:

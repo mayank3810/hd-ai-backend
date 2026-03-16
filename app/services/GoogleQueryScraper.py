@@ -5,7 +5,7 @@ from typing import Optional
 
 from app.helpers.SerpHelper import SerpHelper
 from app.models.GoogleQuery import GoogleQueryModel
-from app.services.UrlScraperRapidAPI import UrlScraperRapidAPIService, RAPIDAPI_DELAY_SECONDS
+from app.services.UrlScraperRapidAPI import UrlScraperRapidAPIService, RAPIDAPI_DELAY_SECONDS, is_pdf_url
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,11 @@ class GoogleQueryScraperService:
     async def get_google_query_by_id(self, google_query_id: str, user_id: Optional[str] = None):
         return await self.google_query_model.get_by_id(google_query_id, user_id=user_id)
 
+    async def delete_google_query(self, google_query_id: str, user_id: Optional[str] = None) -> bool:
+        """Delete a GoogleQuery by id. When user_id is set, only that user's record can be deleted."""
+
+        return await self.google_query_model.delete_by_id(google_query_id, user_id=user_id)
+
     async def get_list(self, user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> dict:
         """List GoogleQueries with pagination. Filter by user_id when provided."""
         items = await self.google_query_model.get_list(user_id=user_id, skip=skip, limit=limit)
@@ -58,7 +63,8 @@ class GoogleQueryScraperService:
         )
         try:
             urls = await asyncio.to_thread(SerpHelper().search, query)
-            top_urls = (urls or [])[:GOOGLE_QUERY_TOP_N]
+            non_pdf = [u for u in (urls or []) if not is_pdf_url(u)]
+            top_urls = non_pdf[:GOOGLE_QUERY_TOP_N]
             await self.google_query_model.update_by_id(
                 google_query_id,
                 {"urls": top_urls, "updatedAt": datetime.utcnow()},

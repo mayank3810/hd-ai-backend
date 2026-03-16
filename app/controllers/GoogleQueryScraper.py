@@ -96,3 +96,31 @@ async def get_google_query(
             detail={"data": None, "error": str(e), "success": False},
         )
 
+
+@router.delete("/delete-query/{google_query_id}", response_model=ServerResponse)
+async def delete_google_query(
+    google_query_id: str,
+    service=Depends(get_google_query_scraper_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """Delete a Google search query by its object ID. Only the owning user can delete."""
+    try:
+        user_id = jwt_payload.get("id")
+        deleted = await service.delete_google_query(google_query_id, user_id=user_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail={"data": None, "error": "GoogleQuery not found", "success": False},
+            )
+        return Utils.create_response(
+            {"googleQueryId": google_query_id, "message": "Google query deleted successfully"},
+            True,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
