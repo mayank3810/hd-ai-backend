@@ -263,7 +263,7 @@ def generate_chatbot_welcome_message() -> str:
     MUST include company name "Human Driven AI".
     """
     fallback_msg = (
-        "Hi! I am your Assistant for creating your Speaker profile at Human Driven AI.<br>"
+        "Hi! Welcome to Human Driven AI — let's create your Speaker profile.<br>"
         "Please provide your email and name to get started."
     )
     api_key = os.getenv("OPENAI_API_KEY")
@@ -278,9 +278,10 @@ def generate_chatbot_welcome_message() -> str:
                 {
                     "role": "system",
                     "content": "You are a friendly onboarding assistant. Write a short welcome message (2-3 lines max) that: "
-                    "1) MUST include the company name 'Human Driven AI' (e.g. 'Hi! I'm your Assistant for creating Speaker profiles at Human Driven AI'); "
+                    "1) MUST include the company name 'Human Driven AI' (e.g. 'Hi! Welcome to Human Driven AI — let's create your Speaker profile'); "
                     "2) Asks the user to provide their email and name to get started. "
-                    "Use <br> tags for line breaks. No JSON. Warm and conversational tone. Always mention Human Driven AI by name.",
+                    "Use <br> tags for line breaks. No JSON. Warm and conversational tone. Always mention Human Driven AI by name. "
+                    "Do NOT say 'I am your assistant', 'I'm your helpful assistant', or any phrase that introduces you as an assistant — just welcome them and state what you're here to do.",
                 },
                 {"role": "user", "content": "Generate the welcome message."},
             ],
@@ -329,7 +330,7 @@ def generate_welcome_message(first_step_question: str) -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a friendly onboarding agent for Human Driven AI. Match the conversational style of a Speaker Pitcher sample: warm greeting, clear value prop (finding speaking opportunities, drafting submission materials), then ask for their name. Return ONLY the HTML-formatted message with <br> tags for line breaks. No JSON. Maximum 3 lines.",
+                    "content": "You are a friendly onboarding agent for Human Driven AI. Match the conversational style of a Speaker Pitcher sample: warm greeting, clear value prop (finding speaking opportunities, drafting submission materials), then ask for their name. Return ONLY the HTML-formatted message with <br> tags for line breaks. No JSON. Maximum 3 lines. Do NOT say 'I am your assistant', 'I'm your helpful assistant', or any phrase that introduces you as an assistant — focus on the value and the next step.",
                 },
                 {"role": "user", "content": str(prompt)},
             ],
