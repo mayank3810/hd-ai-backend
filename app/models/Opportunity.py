@@ -1,3 +1,5 @@
+from typing import List
+
 from app.helpers.Database import MongoDB
 from bson import ObjectId
 import os
@@ -41,3 +43,24 @@ class OpportunityModel:
         """Get a single opportunity by ID."""
         doc = await self.collection.find_one({"_id": ObjectId(opportunity_id)})
         return doc
+
+    async def get_by_ids(self, opportunity_ids: List[str]) -> List[dict]:
+        """Get opportunities by list of IDs. Returns list in same order as ids; skips invalid/not-found ids."""
+        if not opportunity_ids:
+            return []
+        oids = []
+        for sid in opportunity_ids:
+            try:
+                oids.append(ObjectId(sid))
+            except Exception:
+                continue
+        if not oids:
+            return []
+        cursor = self.collection.find({"_id": {"$in": oids}})
+        docs = await cursor.to_list(length=len(oids))
+        id_to_doc = {str(d["_id"]): d for d in docs}
+        result = []
+        for sid in opportunity_ids:
+            if sid in id_to_doc:
+                result.append(id_to_doc[sid])
+        return result

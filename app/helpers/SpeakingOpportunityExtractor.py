@@ -2,11 +2,13 @@
 Uses an LLM to extract Speaking Opportunities from scraped website content.
 Processes content in chunks with overlap to avoid hallucination and context loss at boundaries.
 Topics extracted by the LLM are constrained to the canonical list in speaker_profile_chatbot.TOPICS.
+Only future opportunities with start_date/end_date are kept; webinars/seminars (attend-only) are excluded.
 """
 import json
 import logging
 import os
 import re
+from datetime import datetime, date
 from typing import List, Dict, Any, Optional, Tuple
 from openai import OpenAI
 
@@ -110,30 +112,82 @@ def _filter_target_audiences_to_allowed(raw_list: List[str]) -> List[str]:
     )
 
 
+def _parse_date_to_iso(value: Any) -> Optional[str]:
+    """
+    Parse a date string from LLM (various formats) to ISO date YYYY-MM-DD.
+    Returns None if parsing fails.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    # Already ISO-like
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        try:
+            datetime.strptime(s[:10], "%Y-%m-%d")
+            return s[:10]
+        except ValueError:
+            pass
+    formats = [
+        "%Y-%m-%d",
+        "%d %b %Y",
+        "%d %B %Y",
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%m/%d/%Y",
+        "%d/%m/%Y",
+        "%Y/%m/%d",
+        "%B %Y",  # March 2025 -> first day of month
+        "%b %Y",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(s[:50].strip(), fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _is_future_or_today(iso_date: Optional[str]) -> bool:
+    """True if iso_date is today or in the future (date only)."""
+    if not iso_date or len(iso_date) < 10:
+        return False
+    try:
+        d = datetime.strptime(iso_date[:10], "%Y-%m-%d").date()
+        return d >= date.today()
+    except ValueError:
+        return False
+
+
 class SpeakingOpportunityExtractor:
     """Extracts speaking opportunities from markdown content via LLM. Topics are constrained to speaker_profile_chatbot.TOPICS."""
 
-    SYSTEM_PROMPT = """You are an expert at identifying speaking opportunities for financial traders and trading professionals.
-Given a CHUNK of website content (in markdown format), extract all potential speaking opportunities such as:
-- Conferences and summits where traders might speak
-- Webinars and virtual events
-- Podcast or media interview opportunities
-- Panel discussions or roundtables
+    SYSTEM_PROMPT = """You are an expert at identifying SPEAKING opportunities for financial traders and trading professionals.
+Only extract opportunities where a speaker has a real chance to speak (e.g. conferences with speaker submissions, call for speakers, panels, keynotes, workshops where experts are invited to speak, podcast/media guest opportunities). 
+Do NOT include webinars or seminars as speaking opportunities - those are typically attend-only events, not opportunities for someone to speak.
+
+Given a CHUNK of website content (in markdown format), extract only future speaking opportunities such as:
+- Conferences and summits with call for speakers or speaker submissions
+- Panel discussions or roundtables where speakers are invited
 - Workshops or training sessions where experts are invited to speak
-- Industry events calling for speakers or submissions
+- Industry events explicitly calling for speakers or submissions
+- Podcast or media interview opportunities
 
 For each opportunity, extract and return a JSON array of objects with EXACTLY these keys:
 - link: Source URL if mentioned, otherwise empty string
 - event_name: Clear name of the event/opportunity
 - location: Event location (city, country, or "Virtual") if mentioned, otherwise empty string
 - topics: Array of relevant topics. You MUST choose ONLY from this exact list (use the exact string): """ + _TOPICS_LIST_STR + """. Pick one or more that best match the event. NEVER leave empty - pick at least one from the list.
-- date: When the event is to happen (e.g. "2025-03-15", "March 2025"), null if not mentioned
+- start_date: Event start date in ISO format YYYY-MM-DD (e.g. "2025-03-15"). Only include FUTURE events. If only a month/year is known use the first day (e.g. "March 2025" -> "2025-03-01"). null if not mentioned or in the past.
+- end_date: Event end date in ISO format YYYY-MM-DD. For one-day events use the SAME date as start_date. For multi-day events use the actual end date. null if not mentioned.
 - speaking_format: You MUST choose exactly ONE from this list (use the exact string): """ + _SPEAKING_FORMATS_STR + """. Pick the one that best matches the event type.
 - delivery_mode: You MUST choose exactly ONE from this list (use the exact string), or empty string if unclear: """ + _DELIVERY_MODE_STR + """
 - target_audiences: Array of audience types. You MUST choose ONLY from this exact list (use the exact strings): """ + _TARGET_AUDIENCES_STR + """. Empty array if none match.
-- metadata: Object with any extra useful info (description, deadline, contact, etc.), empty object {} if none
+- metadata: Object that MUST include "description" (1-2 sentences about the opportunity; use event name or page context if needed). May also include deadline, contact, etc. Never leave description empty.
 
-Return ONLY valid JSON, no other text. Do not invent or hallucinate - only extract what is explicitly present.
+Return ONLY valid JSON, no other text. Do not invent or hallucinate - only extract what is explicitly present. Only include events that are in the future.
 If no opportunities are found in this chunk, return []."""
 
     USER_PROMPT_TEMPLATE = """Extract speaking opportunities from this chunk of website content (chunk {chunk_idx} of {total_chunks}):
@@ -142,7 +196,11 @@ If no opportunities are found in this chunk, return []."""
 {content}
 ---
 
-Return a JSON array of opportunity objects with keys: link, event_name, location, topics, date, speaking_format, delivery_mode, target_audiences, metadata. Use ONLY: topics from """ + _TOPICS_LIST_STR + """; speaking_format from """ + _SPEAKING_FORMATS_STR + """; delivery_mode from """ + _DELIVERY_MODE_STR + """; target_audiences from """ + _TARGET_AUDIENCES_STR + """. topics must have at least one item. If none found, return []."""
+Return a JSON array of opportunity objects with keys: link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences, metadata.
+- Use start_date and end_date in ISO format (YYYY-MM-DD). For one-day events set end_date equal to start_date. Only include FUTURE events.
+- Use ONLY: topics from """ + _TOPICS_LIST_STR + """; speaking_format from """ + _SPEAKING_FORMATS_STR + """; delivery_mode from """ + _DELIVERY_MODE_STR + """; target_audiences from """ + _TARGET_AUDIENCES_STR + """.
+- Do NOT include webinars or seminars (attend-only). Only opportunities where a speaker can speak.
+- topics must have at least one item. If none found, return []."""
 
     def __init__(self, chunk_size: int = None, chunk_overlap: int = None):
         self.chunk_size = chunk_size or int(os.getenv("LLM_CHUNK_SIZE", "6000"))
@@ -202,27 +260,49 @@ Return a JSON array of opportunity objects with keys: link, event_name, location
                 return _filter_topics_to_allowed(words)
         return _filter_topics_to_allowed([])  # returns first allowed topic as fallback
 
-    def _normalize_opportunity(self, opp: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize LLM output to schema; topics, speaking_format, delivery_mode, target_audiences constrained to speaker_profile_chatbot lists."""
+    def _normalize_opportunity(self, opp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Normalize LLM output to schema; topics, speaking_format, delivery_mode, target_audiences constrained.
+        Parses start_date/end_date from date or start_date/end_date; for one-day events end_date = start_date.
+        Returns None if dates are missing or event is in the past (so it gets filtered out).
+        """
         raw_topics = opp.get("topics") if isinstance(opp.get("topics"), list) else []
         topics = _filter_topics_to_allowed([str(t).strip() for t in raw_topics if t]) if raw_topics else self._ensure_topics_non_empty(opp)
         raw_speaking = (opp.get("speaking_format") or "").strip()
         raw_delivery = (opp.get("delivery_mode") or "").strip()
         raw_audiences = opp.get("target_audiences") if isinstance(opp.get("target_audiences"), list) else []
+
+        start_iso = _parse_date_to_iso(opp.get("start_date") or opp.get("date"))
+        end_iso = _parse_date_to_iso(opp.get("end_date"))
+        if not start_iso:
+            return None
+        if not end_iso:
+            end_iso = start_iso
+        if not _is_future_or_today(start_iso):
+            return None
+        if not _is_future_or_today(end_iso):
+            end_iso = start_iso
+
+        meta = opp.get("metadata") if isinstance(opp.get("metadata"), dict) else {}
+        event_name = opp.get("event_name") or opp.get("title") or ""
+        if "description" not in meta or not str(meta.get("description", "")).strip():
+            meta = {**meta, "description": (meta.get("description") or event_name or "").strip() or ""}
+
         return {
             "link": opp.get("link") or opp.get("url") or "",
-            "event_name": opp.get("event_name") or opp.get("title") or "",
+            "event_name": event_name,
             "location": opp.get("location") or "",
             "topics": topics,
-            "date": opp.get("date"),
+            "start_date": start_iso,
+            "end_date": end_iso,
             "speaking_format": _filter_speaking_format(raw_speaking),
             "delivery_mode": _filter_delivery_mode(raw_delivery),
             "target_audiences": _filter_target_audiences_to_allowed([str(a).strip() for a in raw_audiences if a]),
-            "metadata": opp.get("metadata") if isinstance(opp.get("metadata"), dict) else {},
+            "metadata": meta,
         }
 
     def _deduplicate_opportunities(self, opportunities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge and deduplicate opportunities by (event_name_normalized, link)."""
+        """Merge and deduplicate opportunities by (event_name_normalized, link). Drops past dates and invalid dates (normalize returns None)."""
         seen = set()
         result = []
         for opp in opportunities:
@@ -231,7 +311,9 @@ Return a JSON array of opportunity objects with keys: link, event_name, location
             key = (event_name, link) if event_name or link else json.dumps(opp, sort_keys=True)
             if key not in seen:
                 seen.add(key)
-                result.append(self._normalize_opportunity(opp))
+                normalized = self._normalize_opportunity(opp)
+                if normalized is not None:
+                    result.append(normalized)
         return result
 
     def _extract_from_chunk(

@@ -93,6 +93,7 @@ class GoogleQueryScraperService:
                         url_collection_id,
                         url,
                         delay_seconds=RAPIDAPI_DELAY_SECONDS,
+                        from_google_query=True,
                     )
                 except Exception as e:
                     logger.exception("GoogleQuery job url failed google_query_id=%s url=%s err=%s", google_query_id, url[:120], e)

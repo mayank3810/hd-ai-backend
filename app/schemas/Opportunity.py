@@ -3,6 +3,13 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 
 
+class OpportunitySourceSchema(BaseModel):
+    """Source of the opportunity: Google query search or direct URL scraping."""
+
+    google_query: bool = False  # True if found via Google query search, False if from direct URL scrape
+    source_url: str = ""  # URL that was scraped (search result URL or the single URL scraped)
+
+
 class OpportunitySchema(BaseModel):
     """Schema for extracted speaking opportunities from LLM."""
 
@@ -10,10 +17,12 @@ class OpportunitySchema(BaseModel):
     event_name: str = ""
     location: str = ""
     topics: List[str] = Field(default_factory=list, alias="topics")
-    date: Optional[str] = None  # Event date - when event is to happen
+    start_date: Optional[str] = None  # Event start date (ISO format YYYY-MM-DD); future only
+    end_date: Optional[str] = None   # Event end date (ISO format); for one-day events same as start_date
     speaking_format: str = "Not available"  # Workshop, Panel discussion, etc.
     delivery_mode: str = ""  # Virtual or in person
     target_audiences: List[str] = Field(default_factory=list)  # General Audience, managers, etc.
+    source: Optional[OpportunitySourceSchema] = None  # How this opportunity was found (google query vs URL)
     metadata: dict = Field(default_factory=dict)
 
     class Config:

@@ -3,7 +3,7 @@ Service for scraping URLs via RapidAPI and storing opportunities.
 Flow: Save url+createdAt to UrlCollection -> background task scrapes -> updates sourceName/description -> extracts via LLM -> inserts opportunities into Opportunities collection.
 No connection with existing Scraper/Scrapers collection.
 Blocking I/O (RapidAPI requests, OpenAI) runs in a thread pool to avoid blocking the event loop.
-PDF URLs are not scraped. Only opportunities with all required fields (link, event_name, location, topics, date, speaking_format, delivery_mode, target_audiences) are saved.
+PDF URLs are not scraped. Only opportunities with all required fields (link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences) are saved.
 """
 import asyncio
 import logging
@@ -16,6 +16,7 @@ from app.models.Opportunity import OpportunityModel
 from app.helpers.RapidAPIScraper import RapidAPIScraper
 from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
 from app.helpers.SerpHelper import SerpHelper
+from app.helpers.PineconeOpportunityStore import PineconeOpportunityStore
 from app.agents.EventDetailEnricherAgent import EventDetailEnricherAgent
 
 RAPIDAPI_DELAY_SECONDS = 5
@@ -40,7 +41,7 @@ def is_pdf_url(url: str) -> bool:
 def filter_complete_opportunities(opportunities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Keep only opportunities that have all required fields filled (link, event_name, location,
-    topics, date, speaking_format, delivery_mode, target_audiences). If LLM couldn't find any,
+    topics, start_date, end_date, speaking_format, delivery_mode, target_audiences). If LLM couldn't find any,
     the opportunity is not added to the collection.
     """
     result = []
@@ -49,7 +50,8 @@ def filter_complete_opportunities(opportunities: List[Dict[str, Any]]) -> List[D
         event_name = (opp.get("event_name") or opp.get("title") or "").strip()
         location = (opp.get("location") or "").strip()
         topics = opp.get("topics")
-        date_val = opp.get("date")
+        start_date = opp.get("start_date")
+        end_date = opp.get("end_date")
         speaking_format = (opp.get("speaking_format") or "").strip()
         delivery_mode = (opp.get("delivery_mode") or "").strip()
         target_audiences = opp.get("target_audiences")
@@ -58,7 +60,9 @@ def filter_complete_opportunities(opportunities: List[Dict[str, Any]]) -> List[D
             continue
         if not isinstance(topics, list) or len(topics) == 0:
             continue
-        if date_val is None or not str(date_val).strip():
+        if start_date is None or not str(start_date).strip():
+            continue
+        if end_date is None or not str(end_date).strip():
             continue
         if not speaking_format or not delivery_mode:
             continue
@@ -167,7 +171,7 @@ class UrlScraperRapidAPIService:
         return {"success": True, "data": "Scraper deleted successfully"}
 
     async def run_scrape_and_extract(
-        self, url_collection_id: str, url: str, delay_seconds: float = 0
+        self, url_collection_id: str, url: str, delay_seconds: float = 0, from_google_query: bool = False
     ) -> None:
         """
         Background task: scrape URL via RapidAPI, extract opportunities via LLM,
@@ -176,8 +180,9 @@ class UrlScraperRapidAPIService:
 
         Args:
             url_collection_id: UrlCollection document ID
-            url: URL to scrape
+            url: URL to scrape (also used as source_url on each opportunity)
             delay_seconds: Optional delay before each RapidAPI call (e.g. 5 for cron). Default 0.
+            from_google_query: If True, opportunities are tagged as found via Google query search; if False, from direct URL scraping.
         """
         logger.info("Background job started url_collection_id=%s url=%s", url_collection_id, url[:80])
         try:
@@ -199,7 +204,7 @@ class UrlScraperRapidAPIService:
             complete = filter_complete_opportunities(opportunities)
             dropped = len(opportunities) - len(complete)
             if dropped:
-                logger.info("Job %s: dropped %d opportunities missing required fields (link, event_name, location, topics, date, speaking_format, delivery_mode, target_audiences)", url_collection_id, dropped)
+                logger.info("Job %s: dropped %d opportunities missing required fields (link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences)", url_collection_id, dropped)
 
             # Unique topics from saved opportunities, for UrlCollection
             extracted_topics = sorted(
@@ -231,10 +236,24 @@ class UrlScraperRapidAPIService:
                     opp["metadata"] = {}
                 opp["metadata"]["sourceUrl"] = url
                 opp["metadata"]["urlCollectionId"] = url_collection_id
+                if not opp["metadata"].get("description") or not str(opp["metadata"].get("description", "")).strip():
+                    opp["metadata"]["description"] = (description or opp.get("event_name") or "").strip() or ""
+                opp["source"] = {"google_query": from_google_query, "source_url": url}
 
             if complete:
                 inserted_ids = await self.opportunity_model.insert_many(complete)
                 logger.info("Job %s completed: inserted %d opportunities into Opportunities collection", url_collection_id, len(inserted_ids))
+                # Push each opportunity to Pinecone (vector DB) in thread to avoid blocking
+                try:
+                    store = PineconeOpportunityStore()
+                    if store.is_configured():
+                        def _upsert_batch():
+                            for opp, oid in zip(complete, inserted_ids):
+                                store.upsert_opportunity(oid, opp)
+                        await asyncio.to_thread(_upsert_batch)
+                        logger.info("Job %s: pushed %d opportunities to Pinecone", url_collection_id, len(inserted_ids))
+                except Exception as pin_e:
+                    logger.warning("Pinecone upsert failed for job %s: %s", url_collection_id, pin_e)
             else:
                 logger.info("Job %s completed with 0 opportunities to insert (all incomplete)", url_collection_id)
         except Exception as e:

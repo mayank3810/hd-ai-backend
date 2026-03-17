@@ -1,7 +1,7 @@
 """
 Agent that enriches opportunities with incomplete details by scraping event URLs
-via RapidAPI and extracting missing fields (location, topics, date, speaking_format,
-delivery_mode, target_audiences, metadata) using an LLM.
+via RapidAPI and extracting missing fields (location, topics, start_date, end_date,
+speaking_format, delivery_mode, target_audiences, metadata) using an LLM.
 Topics are constrained to the canonical list in speaker_profile_chatbot.TOPICS.
 """
 import json
@@ -119,7 +119,8 @@ Extract and return a JSON object with EXACTLY these keys (no array, single objec
 - event_name: Full name of the event (from page title/heading if not in content)
 - location: City, country, or "Virtual" (e.g. "Leipzig, Germany", "New York, USA")
 - topics: Array of relevant topics. You MUST choose ONLY from this exact list (use the exact string): """ + _TOPICS_LIST_STR + """. Pick one or more that best match the event. NEVER leave empty - pick at least one from the list.
-- date: When the event happens - prefer ISO date if clear (e.g. "2026-03-06"), or "Fri, Mar 6, 2026, 7:00 PM", or "March 2026"
+- start_date: Event start date in ISO format YYYY-MM-DD (e.g. "2026-03-06"). Use first day of month if only month/year known.
+- end_date: Event end date in ISO format YYYY-MM-DD. For one-day events use the SAME date as start_date.
 - speaking_format: You MUST choose exactly ONE from this list (use the exact string): """ + _SPEAKING_FORMATS_STR + """
 - delivery_mode: You MUST choose exactly ONE from this list (use the exact string), or empty string if unclear: """ + _DELIVERY_MODE_STR + """
 - target_audiences: Array of audience types. You MUST choose ONLY from this exact list (use the exact strings): """ + _TARGET_AUDIENCES_STR + """. Empty array if none match.
@@ -138,7 +139,7 @@ Full content:
 {content}
 ---
 
-Return a single JSON object with keys: event_name, location, topics, date, speaking_format, delivery_mode, target_audiences, metadata. Use ONLY: topics from """ + _TOPICS_LIST_STR + """; speaking_format from """ + _SPEAKING_FORMATS_STR + """; delivery_mode from """ + _DELIVERY_MODE_STR + """; target_audiences from """ + _TARGET_AUDIENCES_STR + """."""
+Return a single JSON object with keys: event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences, metadata. Use start_date and end_date in ISO format (YYYY-MM-DD); for one-day events set end_date equal to start_date. Use ONLY: topics from """ + _TOPICS_LIST_STR + """; speaking_format from """ + _SPEAKING_FORMATS_STR + """; delivery_mode from """ + _DELIVERY_MODE_STR + """; target_audiences from """ + _TARGET_AUDIENCES_STR + """."""
 
     def __init__(self, rapidapi_scraper: RapidAPIScraper = None):
         self.rapidapi_scraper = rapidapi_scraper or RapidAPIScraper()
@@ -147,7 +148,9 @@ Return a single JSON object with keys: event_name, location, topics, date, speak
         """Return True if opportunity needs enrichment (missing key details)."""
         has_location = bool((opp.get("location") or "").strip())
         has_topics = bool(opp.get("topics") and len(opp.get("topics", [])) > 0)
-        has_date = opp.get("date") is not None and str(opp.get("date")).strip() != ""
+        has_start_date = opp.get("start_date") is not None and str(opp.get("start_date")).strip() != ""
+        has_end_date = opp.get("end_date") is not None and str(opp.get("end_date")).strip() != ""
+        has_date = has_start_date and has_end_date
         has_speaking_format = bool((opp.get("speaking_format") or "").strip()) and (opp.get("speaking_format") or "").lower() != "not available"
         has_delivery_mode = bool((opp.get("delivery_mode") or "").strip())
         has_target_audiences = bool(opp.get("target_audiences") and len(opp.get("target_audiences", [])) > 0)
@@ -220,7 +223,12 @@ Return a single JSON object with keys: event_name, location, topics, date, speak
         _fill("event_name")
         _fill("location")
         _fill("topics", [])
-        _fill("date")
+        _fill("start_date")
+        _fill("end_date")
+        if not result.get("start_date") and enriched.get("date"):
+            result["start_date"] = enriched.get("date")
+        if not result.get("end_date") and result.get("start_date"):
+            result["end_date"] = result["start_date"]
         _fill("speaking_format")
         _fill("delivery_mode")
         _fill("target_audiences")
