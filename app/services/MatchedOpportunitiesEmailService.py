@@ -5,7 +5,6 @@ from typing import List
 
 from postmarker.core import PostmarkClient
 
-from app.config import get_settings
 from app.models.SpeakerProfile import SpeakerProfileModel
 from app.services.Opportunity import OpportunityService
 
