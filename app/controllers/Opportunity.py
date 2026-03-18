@@ -4,7 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from app.schemas.ServerResponse import ServerResponse
 from app.helpers.Utilities import Utils
 from app.middleware.JWTVerification import jwt_validator
-from app.dependencies import get_opportunity_service
+from app.dependencies import get_opportunity_service, get_matched_opportunities_email_service
 
 router = APIRouter(prefix="/api/v1/opportunities", tags=["Opportunities"])
 
@@ -37,16 +37,65 @@ async def match_opportunities_by_speaker(
     jwt_payload: dict = Depends(jwt_validator),
 ):
     """
-    Start a background job to match opportunities for this speaker and save to matchedOpportunities.
-    Returns immediately with message; use GET /opportunities/matched?speaker_profile_id=... to fetch results.
+    Delete existing matchedOpportunities for this speaker, create an entry with status 'processing',
+    start a background job to match opportunities, then return the entry id.
+    On completion the background task updates that entry to status 'completed' with the matched opportunity ids.
+    Use GET /opportunities/matched?speaker_profile_id=... to fetch results (status in doc when needed).
     """
     try:
-        background_tasks.add_task(service.run_matching_and_save, speaker_profile_id)
+        entry_id = await service.start_matching_run(speaker_profile_id)
+        if not entry_id:
+            raise HTTPException(
+                status_code=500,
+                detail={"data": None, "error": "Failed to create matching entry", "success": False},
+            )
+        background_tasks.add_task(
+            service.run_matching_and_save,
+            speaker_profile_id,
+            None,  # match_agent
+            entry_id,
+        )
         return Utils.create_response(
             {
                 "message": "Matching started",
                 "speaker_profile_id": speaker_profile_id,
+                "matched_opportunities_entry_id": entry_id,
             },
+            True,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.post("/send-matched-email", response_model=ServerResponse)
+async def send_matched_opportunities_email(
+    speaker_profile_id: str = Query(..., description="Speaker profile ID"),
+    service=Depends(get_matched_opportunities_email_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """
+    Send matched opportunities to the speaker's email (from speaker profile).
+    Email contains event_name and a link per opportunity; the link calls GET /api/v1/opportunities/{id}.
+    Uses Postmark (FROM_EMAIL_ID and POSTMARK-SERVER-API-TOKEN from env).
+    """
+    try:
+        sent = await service.send_matched_opportunities_email(speaker_profile_id)
+        if not sent:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "data": None,
+                    "error": "Could not send email (missing profile/email, no matched opportunities, or Postmark config)",
+                    "success": False,
+                },
+            )
+        return Utils.create_response(
+            {"message": "Matched opportunities email sent", "speaker_profile_id": speaker_profile_id},
             True,
         )
     except HTTPException:
@@ -69,8 +118,36 @@ async def get_matched_opportunities_by_speaker(
     Returns full opportunity documents whose ids are in the saved opportunities array for this speaker.
     """
     try:
-        opportunities = await service.get_matched_opportunities_by_speaker_id(speaker_profile_id)
-        return Utils.create_response({"opportunities": opportunities}, True)
+        opportunities, status = await service.get_matched_opportunities_by_speaker_id(
+            speaker_profile_id
+        )
+        return Utils.create_response(
+            {"opportunities": opportunities, "status": status}, True
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.get("/{opportunity_id}", response_model=ServerResponse)
+async def get_opportunity_by_id(
+    opportunity_id: str,
+    service=Depends(get_opportunity_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """Get a single opportunity by ID. Link in emails points to this API."""
+    try:
+        opportunity = await service.get_opportunity_by_id(opportunity_id)
+        if not opportunity:
+            raise HTTPException(
+                status_code=404,
+                detail={"data": None, "error": "Opportunity not found", "success": False},
+            )
+        return Utils.create_response(opportunity, True)
     except HTTPException:
         raise
     except Exception as e:

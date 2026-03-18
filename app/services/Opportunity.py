@@ -55,6 +55,13 @@ class OpportunityService:
             "totalPages": (total + limit - 1) // limit if limit > 0 else 0,
         }
 
+    async def get_opportunity_by_id(self, opportunity_id: str) -> dict | None:
+        """Get a single opportunity by ID. Returns None if not found."""
+        doc = await self.model.get_by_id(opportunity_id)
+        if doc and doc.get("_id") is not None:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
     async def delete_opportunity(self, opportunity_id: str) -> bool:
         """Delete an opportunity by ID. Returns True if deleted."""
         return await self.model.delete_by_id(opportunity_id)
@@ -111,23 +118,41 @@ class OpportunityService:
             opp["similarity_score"] = round(id_to_score.get(str(opp.get("_id")), 0.0), 4)
         return result
 
+    async def start_matching_run(self, speaker_profile_id: str) -> str | None:
+        """
+        Delete any existing matchedOpportunities doc for this speaker, then create a new
+        entry with status 'processing'. Returns the new entry _id (str) or None on failure.
+        """
+        await self.matched_opportunities_model.delete_by_speaker_id(speaker_profile_id)
+        return await self.matched_opportunities_model.create_processing_entry(speaker_profile_id)
+
     async def run_matching_and_save(
         self,
         speaker_profile_id: str,
         match_agent: OpportunitySpeakerMatchAgent = None,
+        matched_entry_id: str | None = None,
     ) -> None:
         """
         Run vector matching, then filter each opportunity with an AI agent (does it match the speaker?),
         and save only the agent-approved opportunity ids to matchedOpportunities.
-        Intended to be run as a background job after match-by-speaker API is hit.
+        When matched_entry_id is provided (from match-by-speaker flow), updates that entry to status 'completed'.
         """
+        def _finish(opportunity_ids: list):
+            if matched_entry_id:
+                return self.matched_opportunities_model.update_entry_completed(
+                    matched_entry_id, opportunity_ids
+                )
+            return self.matched_opportunities_model.upsert_by_speaker_id(
+                speaker_profile_id, opportunity_ids
+            )
+
         profile = await self.speaker_profile_model.get_profile(speaker_profile_id)
         if not profile:
-            await self.matched_opportunities_model.upsert_by_speaker_id(speaker_profile_id, [])
+            await _finish([])
             return
         opportunities = await self.get_matched_opportunities_for_speaker(speaker_profile_id)
         if not opportunities:
-            await self.matched_opportunities_model.upsert_by_speaker_id(speaker_profile_id, [])
+            await _finish([])
             return
         agent = match_agent or OpportunitySpeakerMatchAgent()
         filtered = []
@@ -136,19 +161,24 @@ class OpportunityService:
             if is_match:
                 filtered.append(opp)
         opportunity_ids = [str(o.get("_id")) for o in filtered if o.get("_id") is not None]
-        await self.matched_opportunities_model.upsert_by_speaker_id(speaker_profile_id, opportunity_ids)
+        await _finish(opportunity_ids)
 
-    async def get_matched_opportunities_by_speaker_id(self, speaker_profile_id: str) -> List[dict]:
+    async def get_matched_opportunities_by_speaker_id(
+        self, speaker_profile_id: str
+    ) -> tuple[List[dict], str]:
         """
         Get matched opportunities stored for this speaker (from matchedOpportunities collection).
-        Returns full opportunity documents from MongoDB for all ids in the opportunities array.
+        Returns (list of full opportunity documents, status) where status is 'processing' or 'completed'.
         """
         doc = await self.matched_opportunities_model.get_by_speaker_id(speaker_profile_id)
-        if not doc or not doc.get("opportunities"):
-            return []
-        opportunity_ids = doc["opportunities"]
+        if not doc:
+            return [], "completed"
+        status = (doc.get("status") or "completed").lower()
+        opportunity_ids = doc.get("opportunities") or []
+        if not opportunity_ids:
+            return [], status
         opportunities = await self.model.get_by_ids(opportunity_ids)
         for opp in opportunities:
             if opp.get("_id") is not None:
                 opp["_id"] = str(opp["_id"])
-        return opportunities
+        return opportunities, status

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Email Settings
     FROM_EMAIL_ID: str
     POSTMARK_SERVER_API_TOKEN: str
+    API_BASE_URL: Optional[str] = None  # Base URL for opportunity links in emails (e.g. https://api.example.com)
 
     # Azure Storage Settings
     AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None
