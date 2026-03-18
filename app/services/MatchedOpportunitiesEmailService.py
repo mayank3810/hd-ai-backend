@@ -31,20 +31,16 @@ class MatchedOpportunitiesEmailService:
         """From address from env."""
         return os.getenv("FROM_EMAIL_ID", None)
 
-    def _get_opportunity_link(self, opportunity_id: str) -> str:
-        """Build URL for opening this opportunity (GET opportunity by id API)."""
-        base = os.getenv("API_BASE_URL", None)
-        base = (base or "").rstrip("/")
-        return f"{base}/api/v1/opportunities/{opportunity_id}" if base else f"/api/v1/opportunities/{opportunity_id}"
-
     def _build_html_body(self, opportunities: List[dict]) -> str:
-        """Build HTML email body with only event_name and link per opportunity."""
+        """Build HTML email body with only event_name and link (opportunity's source link) per opportunity."""
         rows = []
         for opp in opportunities:
-            oid = str(opp.get("_id") or "")
             event_name = (opp.get("event_name") or "").strip() or "Opportunity"
-            link = self._get_opportunity_link(oid)
-            rows.append(f'<li>{event_name} — <a href="{link}">{link}</a></li>')
+            link = (opp.get("link") or "").strip()
+            if link:
+                rows.append(f'<li>{event_name} — <a href="{link}">{link}</a></li>')
+            else:
+                rows.append(f"<li>{event_name}</li>")
         list_html = "\n".join(rows)
         return f"<html><body><ul>\n{list_html}\n</ul></body></html>"
 
