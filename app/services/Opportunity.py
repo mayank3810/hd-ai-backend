@@ -42,10 +42,17 @@ class OpportunityService:
         self.pinecone_store = pinecone_store or PineconeOpportunityStore()
         self.matched_opportunities_model = matched_opportunities_model or MatchedOpportunitiesModel()
 
-    async def list_opportunities(self, page: int = 1, limit: int = 10) -> dict:
-        """List opportunities with pagination. page is 1-based."""
+    async def list_opportunities(
+        self,
+        page: int = 1,
+        limit: int = 10,
+        sort_by_start_date: str | None = None,
+        sort_by_end_date: str | None = None,
+    ) -> dict:
+        """List opportunities with pagination. page is 1-based. Optional sort by start_date and/or end_date (asc/desc)."""
         skip = (page - 1) * limit
-        opportunities = await self.model.get_list(skip=skip, limit=limit)
+        sort_by = self._build_sort(sort_by_start_date, sort_by_end_date)
+        opportunities = await self.model.get_list(skip=skip, limit=limit, sort_by=sort_by)
         total = await self.model.count()
         return {
             "opportunities": opportunities,
@@ -54,6 +61,21 @@ class OpportunityService:
             "limit": limit,
             "totalPages": (total + limit - 1) // limit if limit > 0 else 0,
         }
+
+    def _build_sort(
+        self,
+        sort_by_start_date: str | None,
+        sort_by_end_date: str | None,
+    ) -> dict:
+        """Build sort dict for list: start_date and/or end_date (1=asc, -1=desc). Default _id -1 if none."""
+        order = {}
+        if sort_by_start_date and sort_by_start_date.lower() in ("asc", "desc"):
+            order["start_date"] = 1 if sort_by_start_date.lower() == "asc" else -1
+        if sort_by_end_date and sort_by_end_date.lower() in ("asc", "desc"):
+            order["end_date"] = 1 if sort_by_end_date.lower() == "asc" else -1
+        if not order:
+            return {"_id": -1}
+        return order
 
     async def get_opportunity_by_id(self, opportunity_id: str) -> dict | None:
         """Get a single opportunity by ID. Returns None if not found."""
