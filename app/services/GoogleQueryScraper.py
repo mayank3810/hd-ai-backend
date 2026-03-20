@@ -3,8 +3,15 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from app.config.recent_activity import (
+    MESSAGE_GOOGLE_QUERIES_ADDED,
+    RECENT_ACTIVITY_TYPE_GOOGLE_QUERIES,
+    RECENT_ACTIVITY_TYPE_OPPORTUNITIES,
+    message_opportunities_added,
+)
 from app.helpers.SerpHelper import SerpHelper
 from app.models.GoogleQuery import GoogleQueryModel
+from app.models.RecentActivity import RecentActivityModel
 from app.services.UrlScraperRapidAPI import UrlScraperRapidAPIService, RAPIDAPI_DELAY_SECONDS, is_pdf_url
 
 logger = logging.getLogger(__name__)
@@ -21,6 +28,7 @@ class GoogleQueryScraperService:
     def __init__(self):
         self.google_query_model = GoogleQueryModel()
         self.url_scraper_service = UrlScraperRapidAPIService()
+        self.recent_activity_model = RecentActivityModel()
 
     async def create_google_query_job(self, query: str, user_id: Optional[str] = None) -> str:
         doc = {
@@ -75,10 +83,15 @@ class GoogleQueryScraperService:
                     google_query_id,
                     {"status": "completed", "updatedAt": datetime.utcnow()},
                 )
+                await self.recent_activity_model.try_insert_activity(
+                    RECENT_ACTIVITY_TYPE_GOOGLE_QUERIES,
+                    MESSAGE_GOOGLE_QUERIES_ADDED,
+                )
                 logger.info("GoogleQuery job completed (0 urls) google_query_id=%s", google_query_id)
                 return
 
             url_collection_ids: list[str] = []
+            total_opportunities_inserted = 0
             for i, url in enumerate(top_urls):
                 try:
                     if i > 0:
@@ -89,12 +102,13 @@ class GoogleQueryScraperService:
                         google_query_id,
                         {"urlCollectionIds": url_collection_ids, "updatedAt": datetime.utcnow()},
                     )
-                    await self.url_scraper_service.run_scrape_and_extract(
+                    n = await self.url_scraper_service.run_scrape_and_extract(
                         url_collection_id,
                         url,
                         delay_seconds=RAPIDAPI_DELAY_SECONDS,
                         from_google_query=True,
                     )
+                    total_opportunities_inserted += n
                 except Exception as e:
                     logger.exception("GoogleQuery job url failed google_query_id=%s url=%s err=%s", google_query_id, url[:120], e)
 
@@ -102,6 +116,15 @@ class GoogleQueryScraperService:
                 google_query_id,
                 {"status": "completed", "updatedAt": datetime.utcnow()},
             )
+            await self.recent_activity_model.try_insert_activity(
+                RECENT_ACTIVITY_TYPE_GOOGLE_QUERIES,
+                MESSAGE_GOOGLE_QUERIES_ADDED,
+            )
+            if total_opportunities_inserted > 0:
+                await self.recent_activity_model.try_insert_activity(
+                    RECENT_ACTIVITY_TYPE_OPPORTUNITIES,
+                    message_opportunities_added(total_opportunities_inserted),
+                )
             logger.info("GoogleQuery job completed google_query_id=%s urls=%d", google_query_id, len(top_urls))
         except Exception as e:
             logger.exception("GoogleQuery job failed google_query_id=%s err=%s", google_query_id, e)

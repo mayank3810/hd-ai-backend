@@ -11,7 +11,7 @@ from app.middleware.Cors import add_cors_middleware
 from app.middleware.GlobalErrorHandling import GlobalErrorHandlingMiddleware
 from app.controllers import Auth, Profile, Common
 from app.middleware.JWTVerification import jwt_validator
-from app.controllers import SpeakerProfileOnboarding, SpeakerOptions, Scraper, UrlScraperRapidAPI, GoogleQueryScraper, Opportunity
+from app.controllers import SpeakerProfileOnboarding, SpeakerOptions, Scraper, UrlScraperRapidAPI, GoogleQueryScraper, Opportunity, Dashboard
 from app.dependencies import get_url_scraper_rapidapi_service
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -52,6 +52,7 @@ app.include_router(Scraper.router, dependencies=[Depends(jwt_validator)])
 app.include_router(UrlScraperRapidAPI.router, dependencies=[Depends(jwt_validator)])
 app.include_router(GoogleQueryScraper.router, dependencies=[Depends(jwt_validator)])
 app.include_router(Opportunity.router, dependencies=[Depends(jwt_validator)])
+app.include_router(Dashboard.router, dependencies=[Depends(jwt_validator)])
 
 
 @app.on_event("startup")

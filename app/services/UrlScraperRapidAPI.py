@@ -11,8 +11,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from app.config.recent_activity import (
+    MESSAGE_SCRAPER_ADDED,
+    RECENT_ACTIVITY_TYPE_OPPORTUNITIES,
+    RECENT_ACTIVITY_TYPE_SCRAPER,
+    message_opportunities_added,
+)
 from app.models.UrlCollection import UrlCollectionModel
 from app.models.Opportunity import OpportunityModel
+from app.models.RecentActivity import RecentActivityModel
 from app.helpers.RapidAPIScraper import RapidAPIScraper
 from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
 from app.helpers.SerpHelper import SerpHelper
@@ -124,6 +131,7 @@ class UrlScraperRapidAPIService:
         self.url_collection_model = UrlCollectionModel()
         self.opportunity_model = OpportunityModel()
         self.enricher_agent = EventDetailEnricherAgent()
+        self.recent_activity_model = RecentActivityModel()
 
     async def create_url_scrape_job(self, url: str, user_id: str = None, topics: Optional[list] = None) -> str:
         """
@@ -172,30 +180,34 @@ class UrlScraperRapidAPIService:
 
     async def run_scrape_and_extract(
         self, url_collection_id: str, url: str, delay_seconds: float = 0, from_google_query: bool = False
-    ) -> None:
+    ) -> int:
         """
         Background task: scrape URL via RapidAPI, extract opportunities via LLM,
         insert each opportunity as root-level doc in Opportunities collection.
         Blocking I/O runs in thread pool so it does not block other requests.
+
+        Returns:
+            Number of opportunity documents inserted for this URL (0 if none or on failure).
 
         Args:
             url_collection_id: UrlCollection document ID
             url: URL to scrape (also used as source_url on each opportunity)
             delay_seconds: Optional delay before each RapidAPI call (e.g. 5 for cron). Default 0.
             from_google_query: If True, opportunities are tagged as found via Google query search; if False, from direct URL scraping.
+            Per-URL recent-activity for scraper/opportunities is skipped when True; the caller aggregates one opportunities row.
         """
         logger.info("Background job started url_collection_id=%s url=%s", url_collection_id, url[:80])
         try:
             if is_pdf_url(url):
                 logger.info("Skipping PDF URL url_collection_id=%s", url_collection_id)
                 await self.url_collection_model.update_by_id(url_collection_id, {"status": "failed"})
-                return
+                return 0
             # Run blocking work (RapidAPI, OpenAI, enricher) in thread pool - prevents blocking event loop
             parsed = await asyncio.to_thread(_sync_scrape_extract_enrich, url, delay_seconds)
             if parsed is None:
                 logger.error("Job %s scrape/extract failed", url_collection_id)
                 await self.url_collection_model.update_by_id(url_collection_id, {"status": "failed"})
-                return
+                return 0
 
             source_name = parsed["source_name"]
             description = parsed["description"]
@@ -227,9 +239,15 @@ class UrlScraperRapidAPIService:
                 "topics": extracted_topics,
             })
 
+            if not from_google_query:
+                await self.recent_activity_model.try_insert_activity(
+                    RECENT_ACTIVITY_TYPE_SCRAPER,
+                    MESSAGE_SCRAPER_ADDED,
+                )
+
             if not opportunities:
                 logger.info("Job %s completed with 0 opportunities", url_collection_id)
-                return
+                return 0
 
             for opp in complete:
                 if "metadata" not in opp or not isinstance(opp["metadata"], dict):
@@ -243,6 +261,11 @@ class UrlScraperRapidAPIService:
             if complete:
                 inserted_ids = await self.opportunity_model.insert_many(complete)
                 logger.info("Job %s completed: inserted %d opportunities into Opportunities collection", url_collection_id, len(inserted_ids))
+                if not from_google_query:
+                    await self.recent_activity_model.try_insert_activity(
+                        RECENT_ACTIVITY_TYPE_OPPORTUNITIES,
+                        message_opportunities_added(len(inserted_ids)),
+                    )
                 # Push each opportunity to Pinecone (vector DB) in thread to avoid blocking
                 try:
                     store = PineconeOpportunityStore()
@@ -254,11 +277,14 @@ class UrlScraperRapidAPIService:
                         logger.info("Job %s: pushed %d opportunities to Pinecone", url_collection_id, len(inserted_ids))
                 except Exception as pin_e:
                     logger.warning("Pinecone upsert failed for job %s: %s", url_collection_id, pin_e)
+                return len(inserted_ids)
             else:
                 logger.info("Job %s completed with 0 opportunities to insert (all incomplete)", url_collection_id)
+                return 0
         except Exception as e:
             logger.exception("Job %s failed: %s", url_collection_id, e)
             await self.url_collection_model.update_by_id(url_collection_id, {"status": "failed"})
+            return 0
 
     async def _run_tedx_cron_async(self) -> None:
         """

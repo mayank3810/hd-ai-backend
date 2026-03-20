@@ -32,6 +32,10 @@ class SpeakerProfileModel:
             collection_name
         ]
 
+    async def count(self) -> int:
+        """Total documents in the speaker_profiles collection."""
+        return await self.collection.count_documents({})
+
     async def create_profile(
         self,
         full_name: str,
