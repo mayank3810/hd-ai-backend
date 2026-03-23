@@ -5,34 +5,39 @@ Topics and Target Audiences are validated against these names; DB lookups provid
 
 # Canonical allowed topic names (exact match, case-sensitive for storage)
 TOPICS = [
-    "Executive Leadership",
-    "Nonprofit",
-    "Technology",
-    "Customer Experience",
-    "Financial Services",
-    "Human Resources (HR)",
-    "Public Relations (PR)",
-    "B2C",
-    "Developer",
-    "Marketing",
-    "Communications",
-    "Retail",
     "AI",
-    "Data Science",
-    "Education",
     "B2B",
-    "EdTech",
+    "B2C",
+    "Communications",
+    "Customer Experience",
+    "Data Science",
+    "Developer",
     "E-Commerce",
+    "EdTech",
+    "Education",
+    "Entrepreneurship",
+    "Executive Leadership",
+    "Financial Services",
+    "Franchise",
+    "Health",
+    "Human Resources (HR)",
+    "Marketing",
+    "Nonprofit",
+    "Public Relations (PR)",
+    "Remortgage",
+    "Retail",
+    "Technology",
     "UX/UI",
     "Women In Tech",
 ]
 
 # Canonical allowed speaking formats
 SPEAKING_FORMATS = [
+    "Breakout Session",
     "Keynote",
     "Panel Discussion",
-    "Workshop",
     "Solo Talk",
+    "Workshop",
 ]
 
 # Canonical allowed delivery modes (matches speaker_profile_steps)
@@ -44,18 +49,20 @@ DELIVERY_MODE = [
 
 # Canonical allowed target audience names
 TARGET_AUDIENCES = [
-    "General Audience",
-    "Managers",
-    "Technical Professionals",
-    "Sales Teams",
-    "Executives",
     "Corporate Teams",
-    "Women Leaders",
-    "Startups",
-    "Small Businesses",
-    "HR Professionals",
     "Entrepreneurs",
+    "Executives",
+    "Franchise",
+    "General Audience",
+    "HR Professionals",
+    "Managers",
+    "Nonprofit Leaders",
+    "Sales Teams",
+    "Small Businesses",
+    "Startups",
     "Students",
+    "Technical Professionals",
+    "Women Leaders",
 ]
 
 # Mandatory fields for speaker profile (must be filled before "complete")

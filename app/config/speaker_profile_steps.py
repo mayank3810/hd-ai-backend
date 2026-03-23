@@ -23,7 +23,7 @@ class StepDefinition(BaseModel):
 
 
 # Canonical allowed values for enum steps (used for selection + text normalization)
-SPEAKING_FORMATS = ["Keynote", "Panel Discussion", "Workshop", "Solo Talk"]
+SPEAKING_FORMATS = ["Breakout Session", "Keynote", "Panel Discussion", "Solo Talk", "Workshop"]
 DELIVERY_MODES = ["In-Person", "Virtual", "Hybrid"]
 
 

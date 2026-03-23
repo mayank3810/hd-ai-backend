@@ -40,6 +40,19 @@ _ALLOWED_VALUES_MAP = {
     "target_audiences": TARGET_AUDIENCES,
 }
 
+_INVALID_FIXED_LIST_GUIDANCE = (
+    "If your choice is not on the list of available options, "
+    "you can add it manually to your Speaker Profile following this chat."
+)
+
+
+def _prompt_option_lines(values: List[str], line_prefix: str = "                ") -> str:
+    return "\n".join(f"{line_prefix}{v}  " for v in values)
+
+
+def _prompt_topic_bullet_lines(line_prefix: str = "                ") -> str:
+    return "\n".join(f"{line_prefix}• {t}  " for t in TOPICS)
+
 
 def _get_steps_context() -> str:
     """Build context for LLM: step order (required first, then optional), questions (for reframing)."""
@@ -426,20 +439,26 @@ class SpeakerProfileChatbotService:
                 "ALLOWED VALUES (STRICT — DO NOT ACCEPT ANY OTHER VALUES): "
 
                 "TOPICS (User may choose multiple): "
-                "Executive Leadership, Nonprofit, Technology, Customer Experience, Financial Services, Human Resources (HR), Public Relations (PR), B2C, Developer, Marketing, Communications, Retail, AI, Data Science, Education, B2B, EdTech, E-Commerce, UX/UI, Women In Tech. "
+                + ", ".join(TOPICS)
+                + ". "
 
                 "SPEAKING FORMAT: "
-                "Keynote, Panel Discussion, Workshop, Solo Talk. "
+                + ", ".join(SPEAKING_FORMATS)
+                + ". "
 
                 "DELIVERY MODE: "
-                "Virtual, In-person, Hybrid. "
+                + ", ".join(DELIVERY_MODE)
+                + ". "
 
                 "TARGET AUDIENCES (User may choose multiple): "
-                "General Audience, Managers, Technical Professionals, Sales Teams, Executives, Corporate Teams, Women Leaders, Startups, Small Businesses, HR Professionals, Entrepreneurs, Students. "
+                + ", ".join(TARGET_AUDIENCES)
+                + ". "
 
                 "VALIDATION RULES: "
                 "Accept ONLY values from lists above. "
-                "If user gives invalid values, politely say they must choose from available options. "
+                "If user gives invalid values for any field that uses a fixed list (topics, speaking formats, delivery mode, target audiences, or any similar enumerated field), politely explain: \""
+                + _INVALID_FIXED_LIST_GUIDANCE
+                + "\" "
                 "Suggest closest valid matches if possible. "
 
                 "OPTIONAL FIELDS FLOW: "
@@ -463,8 +482,8 @@ class SpeakerProfileChatbotService:
 
                 "RESPONSE FORMAT RULE: "
                 "When it is time for an optional question, output ONLY the question. "
-                "Example (correct): 'What would you like to include as a description of your talk?' "
-                "Example (incorrect): 'Now that we’re done, what would you like to include as a description of your talk?' "
+                "Example (correct): 'Please provide a description of your talk, including the title and overview.' "
+                "Example (incorrect): 'Now that we’re done, please provide a description of your talk, including the title and overview.' "
 
                 "SKIP HANDLING: "
                 "If the user skips or declines an optional field, briefly acknowledge (e.g., 'No problem.') and IMMEDIATELY ask the next optional question. "
@@ -482,7 +501,11 @@ class SpeakerProfileChatbotService:
                 )
         else:
             steps_ctx = _get_steps_context()
-            system = """
+            _topics_ml = _prompt_option_lines(TOPICS)
+            _formats_ml = _prompt_option_lines(SPEAKING_FORMATS)
+            _audiences_ml = _prompt_option_lines(TARGET_AUDIENCES)
+            _topic_bullets_ml = _prompt_topic_bullet_lines()
+            system = f"""
                 You are an expert onboarding assistant for the Human Driven AI platform.
 
                 "Your ONLY job is to onboard speakers by collecting and completing their profile through conversational chat. "
@@ -537,39 +560,11 @@ class SpeakerProfileChatbotService:
 
                 Ask the user to select one or more from this list:
 
-                Executive Leadership  
-                Nonprofit  
-                Technology  
-                Customer Experience  
-                Financial Services  
-                Human Resources (HR)  
-                Public Relations (PR)  
-                B2C  
-                Developer  
-                Marketing  
-                Communications  
-                Retail  
-                AI  
-                Data Science  
-                Education  
-                B2B  
-                EdTech  
-                E-Commerce  
-                UX/UI  
-                Women In Tech
-
-                If the user provides a topic not in this list, politely say:
-
-                "Please choose topics from the available options."
+{_topics_ml}
 
                 Speaking Format (Choose ONE)
 
-                Keynote  
-                Panel Discussion  
-                Workshop  
-                Solo Talk
-
-                If the user provides a different answer, ask them to choose from the list.
+{_formats_ml}
 
                 Delivery Mode (Choose ONE)
 
@@ -579,18 +574,11 @@ class SpeakerProfileChatbotService:
 
                 Target Audience (User may choose multiple)
 
-                General Audience  
-                Managers  
-                Technical Professionals  
-                Sales Teams  
-                Executives  
-                Corporate Teams  
-                Women Leaders  
-                Startups  
-                Small Businesses  
-                HR Professionals  
-                Entrepreneurs  
-                Students
+{_audiences_ml}
+
+                For any fixed-list field above, if the user's answer is not on the list, politely explain:
+
+                "{_INVALID_FIXED_LIST_GUIDANCE}"
 
                 When asking these questions, always show the available options.
 
@@ -599,30 +587,11 @@ class SpeakerProfileChatbotService:
                 "What topics do you usually speak about?  
                 You can choose one or more from the following:
 
-                • AI  
-                • Technology  
-                • Data Science  
-                • Marketing  
-                • Developer  
-                • UX/UI  
-                • Education  
-                • EdTech  
-                • E-Commerce  
-                • Retail  
-                • Customer Experience  
-                • Financial Services  
-                • Human Resources (HR)  
-                • Public Relations (PR)  
-                • B2C  
-                • B2B  
-                • Women In Tech  
-                • Executive Leadership  
-                • Nonprofit  
-                • Communications"
+{_topic_bullets_ml}"
 
                 Talk Description
 
-                Ask the user to provide a short description of their talk or expertise. This field is optional.
+                When asking for this optional field, use wording like: "Please provide a description of your talk, including the title and overview." This field is optional.
 
                 Optional fields flow
 

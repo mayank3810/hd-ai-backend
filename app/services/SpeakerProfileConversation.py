@@ -263,8 +263,8 @@ def generate_chatbot_welcome_message() -> str:
     MUST include company name "Human Driven AI".
     """
     fallback_msg = (
-        "Hi! Welcome to Human Driven AI’s Speaker Pitcher™ Agent.<br>"
-        "To start your profiles, please provide your name as you would like it to appear professionally (e.g., Jane Doe, MBA, PMP), followed by your email address."
+        "Hi! Welcome to Human Driven AI’s Speaker Pitcher™ Agent </br>"
+        "To start your profiles, please provide your name as you would like it to appear professionally (e.g., Jane Doe, MBA, PMP), followed by your  email address. "
     )
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -277,13 +277,10 @@ def generate_chatbot_welcome_message() -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert onboarding assistant for Human Driven AI. Write a short welcome message (2-3 lines max) that: "
-                    "1) MUST include the company name 'Human Driven AI' (e.g. 'Hi! Welcome to Human Driven AI’s Speaker Pitcher™ Agent'); "
-                    "2) Asks the user to provide their email and name to get started. "
-                    "Use <br> tags for line breaks. No JSON. Warm and conversational tone. Always mention Human Driven AI by name. "
+                    "content": "You are an expert onboarding assistant for Human Driven AI. Write a short welcome message (2-3 lines max) that Reframe the user message without changing meaning of user message."
                     "Do NOT say 'I am your assistant', 'I'm your helpful assistant', or any phrase that introduces you as an assistant — just welcome them and state what you're here to do.",
                 },
-                {"role": "user", "content": "Generate the welcome message."},
+                {"role": "user", "content": f"Reframe the {fallback_msg} without changing the meaning."},
             ],
             temperature=0.7,
             timeout=10,
@@ -293,7 +290,7 @@ def generate_chatbot_welcome_message() -> str:
             return fallback_msg
         if "<br>" not in msg and "\n" in msg:
             msg = msg.replace("\n", "<br>")
-        return msg
+        return fallback_msg
     except Exception:
         return fallback_msg
 
