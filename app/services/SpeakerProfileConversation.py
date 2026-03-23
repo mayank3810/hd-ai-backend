@@ -263,8 +263,8 @@ def generate_chatbot_welcome_message() -> str:
     MUST include company name "Human Driven AI".
     """
     fallback_msg = (
-        "Hi! Welcome to Human Driven AI — let's create your Speaker profile.<br>"
-        "Please provide your email and name to get started."
+        "Hi! Welcome to Human Driven AI’s Speaker Pitcher™ Agent.<br>"
+        "To start your profiles, please provide your name as you would like it to appear professionally (e.g., Jane Doe, MBA, PMP), followed by your email address."
     )
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -277,8 +277,8 @@ def generate_chatbot_welcome_message() -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a friendly onboarding assistant. Write a short welcome message (2-3 lines max) that: "
-                    "1) MUST include the company name 'Human Driven AI' (e.g. 'Hi! Welcome to Human Driven AI — let's create your Speaker profile'); "
+                    "content": "You are an expert onboarding assistant for Human Driven AI. Write a short welcome message (2-3 lines max) that: "
+                    "1) MUST include the company name 'Human Driven AI' (e.g. 'Hi! Welcome to Human Driven AI’s Speaker Pitcher™ Agent'); "
                     "2) Asks the user to provide their email and name to get started. "
                     "Use <br> tags for line breaks. No JSON. Warm and conversational tone. Always mention Human Driven AI by name. "
                     "Do NOT say 'I am your assistant', 'I'm your helpful assistant', or any phrase that introduces you as an assistant — just welcome them and state what you're here to do.",
