@@ -47,17 +47,16 @@ async def get_my_speaker_profiles(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Get speaker profile(s) for the current user. Filtered by user_id from JWT.
-    Returns a list (newest first); empty list if none.
+    Get all speaker profiles. Admin only. Returns a list (newest first); empty list if none.
     """
     try:
-        user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
-        if not user_id:
+        user_type = jwt_payload.get("userType")
+        if user_type != "admin":
             raise HTTPException(
-                status_code=401,
-                detail={"data": None, "error": "User ID not found in token.", "success": False},
+                status_code=403,
+                detail={"data": None, "error": "Only admins can access this resource", "success": False},
             )
-        profiles = await model.get_profiles_by_user_id(str(user_id))
+        profiles = await model.get_all_profiles()
         return Utils.create_response(profiles, True)
     except HTTPException:
         raise
@@ -75,16 +74,15 @@ async def get_speaker_profile_by_id(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Get a speaker profile by id. Returns the profile only if it belongs to the current user (JWT).
+    Get a speaker profile by id. Admin only.
     """
     try:
-        user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
-        if not user_id:
+        if jwt_payload.get("userType") != "admin":
             raise HTTPException(
-                status_code=401,
-                detail={"data": None, "error": "User ID not found in token.", "success": False},
+                status_code=403,
+                detail={"data": None, "error": "Only admins can access this resource", "success": False},
             )
-        profile = await model.get_profile_by_id_and_user(profile_id, str(user_id))
+        profile = await model.get_profile(profile_id)
         if not profile:
             raise HTTPException(
                 status_code=404,
@@ -108,16 +106,14 @@ async def update_speaker_profile(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Update a speaker profile. Only provided fields are updated.
-    Profile must belong to the current user (JWT). All profile fields from full_name to preferred_speaking_time can be updated.
+    Update a speaker profile. Admin only. Only provided fields are updated.
     """
-    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
-    if not user_id:
+    if jwt_payload.get("userType") != "admin":
         raise HTTPException(
-            status_code=401,
-            detail={"data": None, "error": "User ID not found in token.", "success": False},
+            status_code=403,
+            detail={"data": None, "error": "Only admins can access this resource", "success": False},
         )
-    profile = await model.get_profile_by_id_and_user(profile_id, str(user_id))
+    profile = await model.get_profile(profile_id)
     if not profile:
         raise HTTPException(
             status_code=404,
@@ -174,14 +170,14 @@ async def resume_onboarding(
     """
     Resume onboarding: return stored conversation and current step payload.
     FE renders conversation as chat, shows step as form, then calls POST /verify-step as in create-profile.
+    Admin only.
     """
-    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
-    if not user_id:
+    if jwt_payload.get("userType") != "admin":
         raise HTTPException(
-            status_code=401,
-            detail={"data": None, "error": "User ID not found in token.", "success": False},
+            status_code=403,
+            detail={"data": None, "error": "Only admins can access this resource", "success": False},
         )
-    profile = await model.get_profile_by_id_and_user(profile_id, str(user_id))
+    profile = await model.get_profile(profile_id)
     if not profile:
         raise HTTPException(
             status_code=404,
