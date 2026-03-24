@@ -42,6 +42,39 @@ _LINKEDIN_URL_SEARCH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Extract HTTP(S) URLs from free-form text (professional social step)
+_SOCIAL_URL_SCRAPE_PATTERN = re.compile(r"https?://[^\s,\[\]<>\"]+", re.IGNORECASE)
+
+
+def _classify_professional_social_url(url: str) -> Optional[str]:
+    """Map URL to profile field name, or None if not a supported professional channel."""
+    u = url.strip().rstrip(".,);]'\"")
+    low = u.lower()
+    if "linkedin.com" in low:
+        return "linkedin_url"
+    if "facebook.com" in low or "fb.com" in low or "m.facebook.com" in low:
+        return "facebook"
+    if "twitter.com" in low or "x.com" in low:
+        return "twitter"
+    if "instagram.com" in low:
+        return "instagram"
+    return None
+
+
+def _parse_professional_social_urls(text: str) -> Dict[str, str]:
+    """
+    Parse text for LinkedIn, Facebook, X/Twitter, Instagram URLs.
+    Returns dict subset of keys: linkedin_url, facebook, twitter, instagram.
+    """
+    out: Dict[str, str] = {}
+    for m in _SOCIAL_URL_SCRAPE_PATTERN.finditer(text or ""):
+        raw = m.group(0).strip().rstrip(".,);]'\"")
+        field = _classify_professional_social_url(raw)
+        if field and _is_valid_url(raw):
+            out[field] = raw
+    return out
+
+
 # YouTube video URL: youtube.com/watch, youtu.be/, youtube.com/embed/, youtube.com/v/, supports query params
 _YOUTUBE_URL_PATTERN = re.compile(
     r"^https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/)|youtu\.be/)[\w\-]+(?:\?[^\s]+)?$",
@@ -533,21 +566,21 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "OK" | "REFUS
 
 
 def _validation_ai_linkedin_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
-    """Detect if user is declining to share or doesn't have LinkedIn. Returns REFUSAL to allow skip; INVALID if they seem to be providing a URL or gibberish."""
+    """Detect skip/defer for social URLs (no links in message). REFUSAL allows skip; INVALID if gibberish."""
     prompt = f"""
-The user was asked for their LinkedIn profile URL. They replied: "{user_text}"
+The user was asked to share professional social media URLs (LinkedIn, Facebook, X, Instagram, etc.). They replied: "{user_text}"
 
-Decide if they are declining or don't have one (e.g. "I don't have LinkedIn", "I prefer not to share", "I don't use LinkedIn", "skip", "none") or if they are trying to provide a URL / something else.
-- If they clearly decline to share or say they don't have a LinkedIn profile, return status "VALID" with "refusal": true (so we allow them to skip).
-- If they provided a URL (even malformed) or the message is unclear/gibberish, return status "INVALID" with reason_code "INVALID_URL".
+Decide if they are skipping, deferring to later, or have none to share (e.g. "I'll add in my profile", "update later", "skip", "none", "prefer not", "don't have any") OR if they seem to be attempting to share links or unrelated gibberish.
+- If they clearly skip, defer to updating their profile later, or have no links to share, return status "VALID" with "refusal": true.
+- If the message looks like they tried to paste URLs but failed, or is unrelated noise, return status "INVALID" with reason_code "INVALID_URL".
 
-Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "INVALID_URL", "refusal": true only when status is VALID and they declined }}
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "INVALID_URL", "refusal": true only when status is VALID and they declined/deferred }}
 """
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Return ONLY JSON. If user declines or doesn't have LinkedIn, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they gave a URL or gibberish, return {\"status\": \"INVALID\", \"reason_code\": \"INVALID_URL\"}. No other fields."},
+                {"role": "system", "content": "Return ONLY JSON. If user skips, defers to profile update later, or has no social URLs, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If gibberish or failed URL attempt without clear skip intent, return {\"status\": \"INVALID\", \"reason_code\": \"INVALID_URL\"}. No other fields."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -625,14 +658,14 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "
         return {"status": "INVALID", "reason_code": "INVALID_URL", "refusal": False}
 
 
-def _validation_ai_key_takeaways_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
-    """Detect if user is declining or has no key takeaways. Returns refusal=True to allow skip."""
+def _validation_ai_testimonial_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect if user is declining or has no testimonials. Returns refusal=True to allow skip."""
     prompt = f"""
-The user was asked for key takeaways for their audience. They replied: "{user_text}"
+The user was asked whether they have testimonials from past speaking. They replied: "{user_text}"
 
-Decide if they are declining or have none (e.g. "I don't have any", "I prefer not to share", "skip", "none", "no takeaways yet") or if they are providing actual key takeaways.
-- If they clearly decline or say they have no key takeaways, return status "VALID" with "refusal": true.
-- If they are providing key takeaways or points, return status "INVALID" with reason_code "EMPTY".
+Decide if they are declining or have none (e.g. "I don't have any", "I prefer not to share", "skip", "none", "no testimonials") or if they are sharing testimonial text.
+- If they clearly decline or say they have no testimonials, return status "VALID" with "refusal": true.
+- If they are providing testimonial content, return status "INVALID" with reason_code "EMPTY".
 
 Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "EMPTY", "refusal": true only when status is VALID and they declined or have none }}
 """
@@ -640,7 +673,7 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Return ONLY JSON. If user declines or has no takeaways, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they provided takeaways, return {\"status\": \"INVALID\", \"reason_code\": \"EMPTY\"}. No other fields."},
+                {"role": "system", "content": "Return ONLY JSON. If user declines or has no testimonials, return {\"status\": \"VALID\", \"reason_code\": \"REFUSAL\", \"refusal\": true}. If they provided testimonials, return {\"status\": \"INVALID\", \"reason_code\": \"EMPTY\"}. No other fields."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -654,6 +687,52 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "
         return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
     except Exception:
         return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+
+
+def _extract_past_speaking_structured(client: OpenAI, user_text: str) -> List[Dict[str, Any]]:
+    """Parse free text into list of dicts for past_speaking_examples."""
+    schema_hint = (
+        '{"entries": [{"organization_name": "", "event_name": "", "relevant_topics": "", '
+        '"audience": "", "date_month_year": ""}]}'
+    )
+    prompt = f"""Extract past speaking engagements from the user's text. Each entry should include when possible:
+- organization_name: hosting organization or company
+- event_name: conference, meetup, or session name
+- relevant_topics: topics or themes (short phrase)
+- audience: who attended (e.g. executives, developers)
+- date_month_year: e.g. "March 2024" or "2023" if only year is known
+
+User text:
+\"\"\"{user_text}\"\"\"
+
+Return JSON ONLY with shape {schema_hint}. Use one object if only one engagement; use multiple if clearly several. Use empty string for unknown fields. If nothing extractable, return {{"entries": []}}."""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY valid JSON with an 'entries' array. No markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=20,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj or not isinstance(obj.get("entries"), list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for e in obj["entries"]:
+            if not isinstance(e, dict):
+                continue
+            out.append({
+                "organization_name": str(e.get("organization_name") or "").strip(),
+                "event_name": str(e.get("event_name") or "").strip(),
+                "relevant_topics": str(e.get("relevant_topics") or "").strip(),
+                "audience": str(e.get("audience") or "").strip(),
+                "date_month_year": str(e.get("date_month_year") or e.get("date") or "").strip(),
+            })
+        return [x for x in out if any(x.values())]
+    except Exception:
+        return []
 
 
 def _validation_ai_full_name_check(client: OpenAI, name: str) -> Dict[str, Any]:
@@ -905,34 +984,34 @@ def validate_step(
             return {"status": "VALID", "reason_code": "OK", "normalized_value": text.strip().lower()}
         return {"status": "INVALID", "reason_code": "INVALID_EMAIL", "normalized_value": None}
 
-    # linkedin_url: optional; empty or refusal -> skip (VALID None). If they provide a URL, validate format and LinkedIn-only.
-    if step.step_name == "linkedin_url" and step.validation_mode == "url_only":
+    # linkedin_url step: professional social URLs (LinkedIn, Facebook, X, Instagram); optional skip / defer to profile.
+    if step.step_name == "linkedin_url" and step.validation_mode == "social_media_urls":
         text = (normalized if isinstance(normalized, str) else "").strip()
         if not text:
             return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
-        # Extract LinkedIn URL from text if present (e.g. "here is my linkedin https://linkedin.com/in/foo")
-        linkedin_match = _LINKEDIN_URL_SEARCH_PATTERN.search(text)
-        if linkedin_match:
-            extracted = linkedin_match.group(0).strip()
-            if _is_valid_linkedin_url(extracted):
-                return {"status": "VALID", "reason_code": "OK", "normalized_value": extracted}
+        parsed = _parse_professional_social_urls(text)
+        if parsed:
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": parsed}
+        # HTTP present but no recognized professional social URL
+        if _SOCIAL_URL_SCRAPE_PATTERN.search(text):
             return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
-        if _is_valid_linkedin_url(text):
-            return {"status": "VALID", "reason_code": "OK", "normalized_value": text}
-        # Text contains something that looks like a URL but isn't valid LinkedIn (e.g. youtube link)
-        if "http" in text.lower() or "www." in text.lower() or ".com" in text.lower():
-            return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
-        # Not a URL: maybe refusal ("I don't have", "don't want to share", etc.)
+        defer_phrases = [
+            "update my profile", "update the profile", "update profile", "add later", "add it later",
+            "do it later", "later", "profile settings", "edit profile", "skip", "prefer not", "none",
+            "don't have", "do not have", "rather not", "not now", "another time",
+        ]
+        tl = text.lower()
+        if any(p in tl for p in defer_phrases):
+            return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
         if client:
             ai_res = _validation_ai_linkedin_refusal(client, text)
             if ai_res.get("refusal") is True:
                 return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
         refusal_phrases = [
-            "don't have", "don't want", "prefer not", "skip", "no linkedin", "rather not",
-            "don't have one", "do not have", "without linkedin", "don't use linkedin",
-            "not on linkedin", "i don't have", "no profile",
+            "don't want", "no linkedin", "don't use linkedin", "not on linkedin", "no profile",
+            "no social", "no urls", "no url",
         ]
-        if any(p in text.lower() for p in refusal_phrases):
+        if any(p in tl for p in refusal_phrases):
             return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
         return {"status": "INVALID", "reason_code": "INVALID_URL", "normalized_value": None}
 
@@ -1086,6 +1165,22 @@ def validate_step(
             ai_res = _validation_ai_gibberish_check(client, step, text)
             if ai_res.get("status") == "INVALID":
                 return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
+        if step.step_name == "past_speaking_examples":
+            if client:
+                extracted = _extract_past_speaking_structured(client, text)
+                if extracted:
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": extracted}
+            return {
+                "status": "VALID",
+                "reason_code": "OK",
+                "normalized_value": [{
+                    "organization_name": "",
+                    "event_name": "",
+                    "relevant_topics": text.strip(),
+                    "audience": "",
+                    "date_month_year": "",
+                }],
+            }
         if step.split_on_conjunctions:
             parts = split_input_topics(text)
             text = ", ".join(parts) if parts else text
@@ -1098,20 +1193,20 @@ def validate_step(
     try:
         if step.validation_mode == "semantic_text_ai":
             text = normalized if isinstance(normalized, str) else " ".join(normalized)
-            # key_takeaways is optional: empty or refusal -> skip (VALID None); handle before generic optional check
-            if step.step_name == "key_takeaways":
+            # testimonial is optional: empty or refusal -> skip (VALID None); handle before generic optional check
+            if step.step_name == "testimonial":
                 if not text.strip():
                     return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
                 refusal_phrases = [
-                    "don't have", "don't have any", "do not have", "prefer not", "skip", "none", "no takeaways",
-                    "don't want to share", "rather not", "nothing to share", "no key takeaways", "not yet",
-                    "don't have any yet", "no points", "cannot share", "can not share", "i cannot", "no i cannot",
-                    "won't share", "will not share",
+                    "don't have", "don't have any", "do not have", "prefer not", "skip", "none", "no testimonials",
+                    "don't want to share", "rather not", "nothing to share", "not yet",
+                    "don't have any yet", "cannot share", "can not share", "i cannot", "no i cannot",
+                    "won't share", "will not share", "no testimonial",
                 ]
                 if any(p in text.lower() for p in refusal_phrases):
                     return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
                 if client:
-                    ai_res = _validation_ai_key_takeaways_refusal(client, text)
+                    ai_res = _validation_ai_testimonial_refusal(client, text)
                     if ai_res.get("refusal") is True:
                         return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
             # Optional field: empty is valid (for other optional semantic steps)
@@ -1178,7 +1273,7 @@ def validate_full_profile(
         "past_speaking_examples": ("past_speaking_examples", "text"),
         "video_links": ("video_links", "text"),
         "talk_description": ("talk_description", "text"),
-        "key_takeaways": ("key_takeaways", "text"),
+        "testimonial": ("testimonial", "text"),
         "target_audiences": ("target_audiences", "selection"),
     }
     for step_def in STEPS:
@@ -1187,11 +1282,29 @@ def validate_full_profile(
             continue
         value_key, default_source = field_mapping[field_name]
         value = profile_data.get(value_key)
+        if field_name == "linkedin_url":
+            bits = []
+            for k in ("linkedin_url", "facebook", "twitter", "instagram"):
+                v = profile_data.get(k)
+                if v:
+                    bits.append(str(v).strip())
+            value = " ".join(bits) if bits else value
         if not step_def.required and (value is None or value == [] or value == ""):
             continue
-        # past_speaking_examples is stored as list; join for textarea validation when validating full profile
+        # past_speaking_examples: list of dicts or legacy strings; flatten to text for validate_step
         if field_name == "past_speaking_examples" and isinstance(value, list):
-            value = ", ".join(str(v).strip() for v in value if v) if value else ""
+            parts = []
+            for v in value:
+                if isinstance(v, dict):
+                    parts.append(
+                        " ".join(
+                            str(v.get(k) or "").strip()
+                            for k in ("organization_name", "event_name", "relevant_topics", "audience", "date_month_year")
+                        ).strip()
+                    )
+                else:
+                    parts.append(str(v).strip())
+            value = " ".join(p for p in parts if p) if parts else ""
         source = default_source
         if step_def.validation_mode == "topics_multiselect":
             source = "selection" if isinstance(value, list) and value and isinstance(value[0], dict) else "text"

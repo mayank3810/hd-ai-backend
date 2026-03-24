@@ -82,10 +82,10 @@ def _fallback_recovery(
                 "A short description of your talk helps us match you to the right events. Could you share a bit about your talk or expertise?",
                 "Describing your talk helps your profile—share a few sentences when you're ready!",
             ]
-        elif step.step_name == "key_takeaways":
+        elif step.step_name == "testimonial":
             variants = [
-                "Key takeaways help event organizers see what audiences get from your talk. Could you share a few?",
-                "Sharing key takeaways helps your profile—a few points for your audience when you're ready!",
+                "Testimonials from past speaking help organizers trust your impact. Could you share any you've received?",
+                "If you have testimonials from past events, sharing them strengthens your profile—whenever you're ready!",
             ]
         elif step.step_name == "target_audiences":
             variants = [
@@ -155,7 +155,7 @@ def _fallback_recovery(
                 "No problem. When you're ready, share a bit about your talk and we can continue.",
                 "That's okay. Whenever you're ready, describe your talk or expertise and we'll move on.",
             ]
-        elif step.step_name == "key_takeaways":
+        elif step.step_name == "testimonial":
             variants = [
                 "No problem. You can skip this step—we'll move on.",
                 "That's okay. We'll continue without it.",
@@ -177,8 +177,8 @@ def _fallback_recovery(
     elif reason_code in ("INVALID_URL",):
         if step.step_name == "linkedin_url":
             variants = [
-                "That doesn't look like a LinkedIn profile link. Paste one like https://linkedin.com/in/yourprofile, or you can skip this step.",
-                "We need a LinkedIn profile URL (linkedin.com/in/...) or you can skip. Your choice!",
+                "Those links don't look like supported professional social URLs (LinkedIn, Facebook, X, or Instagram). Paste full https links, or you can skip.",
+                "Please share valid LinkedIn, Facebook, X, or Instagram profile URLs—or skip and add them later from your profile.",
             ]
         else:
             variants = [
@@ -225,7 +225,7 @@ def _fallback_recovery(
             "That doesn't look like a video link. Paste a YouTube or Vimeo URL, or you can skip this step.",
             "We need a speaking video link (YouTube or Vimeo) or you can skip. Your choice!",
         ]
-    elif reason_code in ("GIBBERISH", "UNRELATED") and step.step_name in ("talk_description", "key_takeaways"):
+    elif reason_code in ("GIBBERISH", "UNRELATED") and step.step_name in ("talk_description", "testimonial"):
         if step.step_name == "talk_description":
             variants = [
                 "A short description helps us match you to the right events. Could you share a bit about your talk or expertise?",
@@ -233,8 +233,8 @@ def _fallback_recovery(
             ]
         else:
             variants = [
-                "Key takeaways help organizers see what audiences get. Could you share a few points?",
-                "Sharing key takeaways helps your profile—a few points when you're ready!",
+                "Testimonials help organizers see your impact. Could you share a quote or feedback from a past talk?",
+                "If you paste a testimonial or two, it really strengthens your profile—share when you're ready!",
             ]
     else:
         # IRRELEVANT / GIBBERISH / SPAM / LOW_EFFORT / UNKNOWN
@@ -449,7 +449,7 @@ def generate_recovery_message(
         return _fallback_recovery(step, reason_code, retry_count, allowed_values)
 
     # For REFUSAL on these steps use fallback only—avoids AI mixing up steps or suggesting alternatives (e.g. 'topics' for wrong step, 'phone number' for email)
-    if reason_code == "REFUSAL" and step_name in ("full_name", "email", "talk_description", "key_takeaways", "delivery_mode", "topics", "speaking_formats", "target_audiences"):
+    if reason_code == "REFUSAL" and step_name in ("full_name", "email", "talk_description", "testimonial", "delivery_mode", "topics", "speaking_formats", "target_audiences"):
         return _fallback_recovery(step, reason_code, retry_count, allowed_values)
 
     seed = _stable_seed(step_name, str(user_answer), reason_code, str(retry_count))
@@ -478,17 +478,17 @@ def generate_recovery_message(
             "Do not mention grammar, spelling, or 'validation'.",
             "Never use demanding or bureaucratic language: no 'This is a required field', 'We need it from you', 'You must provide', or similar.",
             "Do NOT suggest alternatives (e.g. phone number, other contact methods). Only re-ask for the same field; never offer a different field or option.",
-            "CRITICAL—match the CURRENT step_name only. Do NOT mention 'topics' or 'pick a topic' or 'Sharing topics' unless step_name is exactly 'topics'. For delivery_mode say 'delivery' or 'how you deliver', never 'topics'. For target_audiences say 'target audiences' or 'who your audience is', never 'topics'. For talk_description or key_takeaways there is NO list—ask for a description or key takeaways in their own words; never say 'pick from the list' or 'topic'.",
+            "CRITICAL—match the CURRENT step_name only. Do NOT mention 'topics' or 'pick a topic' or 'Sharing topics' unless step_name is exactly 'topics'. For delivery_mode say 'delivery' or 'how you deliver', never 'topics'. For target_audiences say 'target audiences' or 'who your audience is', never 'topics'. For talk_description or testimonial there is NO list—ask in their own words; never say 'pick from the list' or 'topic'.",
             "When step_name is 'topics': brief line on why topics help match them to opportunities, then ask to pick from the list.",
             "When step_name is 'speaking_formats': brief line on why formats help (event organizers find them), then ask to pick from the list (e.g. Keynote, Panel, etc.). Do not say 'topics'.",
             "When step_name is 'delivery_mode': brief line on why delivery helps (match to events), then ask to choose from the options (In-Person, Virtual, Hybrid). Do not say 'topics' or 'Sharing topics'.",
             "When step_name is 'talk_description': brief line on why describing their talk helps (match to right events), then ask to share a description of their talk or expertise in their own words. No list, no topics.",
-            "When step_name is 'key_takeaways': brief line on why key takeaways help, then ask to share a few points for their audience. No list, no topics.",
+            "When step_name is 'testimonial': brief line on why testimonials help, then invite them to share quotes or feedback from past speaking. No list, no topics.",
             "When step_name is 'target_audiences': brief line on why target audiences help (match to right events), then ask to pick from the list. Do not say 'topics'.",
             "For other steps, re-ask in a friendly way in 1–2 short sentences, matching that step only.",
             "Focus on intent, not length or picking all options.",
             "Vary phrasing compared to prior attempts (retry_count).",
-            "If retry_count > 1, add one short hint that fits the step (e.g. 'pick from the list' only for steps that have a list: topics, speaking_formats, delivery_mode, target_audiences). For talk_description/key_takeaways, hint 'share a few sentences' or similar, not 'list'.",
+            "If retry_count > 1, add one short hint that fits the step (e.g. 'pick from the list' only for steps that have a list: topics, speaking_formats, delivery_mode, target_audiences). For talk_description/testimonial, hint 'share a few sentences' or similar, not 'list'.",
             "Do not repeat the exact same wording across retries.",
         ],
         "variation_seed": seed,

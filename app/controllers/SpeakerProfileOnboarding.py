@@ -477,7 +477,7 @@ async def verify_step(
     logger.info("verify-step: branch=success")
     normalized = result.get("normalized_value")
     # When optional step is skipped (normalized is None), use user's typed answer for conversation and response; profile field stays null/empty
-    if normalized is None and body.answer is not None and body.step in ("linkedin_url", "past_speaking_examples", "video_links", "key_takeaways"):
+    if normalized is None and body.answer is not None and body.step in ("linkedin_url", "past_speaking_examples", "video_links", "testimonial"):
         user_answer_str = (
             body.answer if isinstance(body.answer, str) else " ".join(str(x).strip() for x in body.answer if x)
         )
@@ -516,9 +516,25 @@ async def verify_step(
         await model.append_conversation(profile_id, agent_message_for_step, display_value)
         # past_speaking_examples and video_links are stored as arrays; when skipped (normalized None) store []
         if body.step == "past_speaking_examples":
-            step_updates = {body.step: [normalized] if normalized is not None else []}
+            if normalized is None:
+                step_updates = {body.step: []}
+            elif isinstance(normalized, list):
+                step_updates = {body.step: normalized}
+            else:
+                step_updates = {body.step: [normalized]}
         elif body.step == "video_links":
             step_updates = {body.step: normalized if normalized is not None else []}
+        elif body.step == "linkedin_url":
+            if normalized is None:
+                step_updates = {}
+            elif isinstance(normalized, dict):
+                step_updates = {
+                    k: v
+                    for k, v in normalized.items()
+                    if k in ("linkedin_url", "facebook", "twitter", "instagram") and v
+                }
+            else:
+                step_updates = {"linkedin_url": normalized}
         else:
             step_updates = {body.step: normalized}
         await model.update_step(

@@ -34,6 +34,8 @@ _excel_schedule_service = None
 _speaker_profile_model = None
 _speaker_topics_model = None
 _speaker_target_audience_model = None
+_delivery_modes_model = None
+_speaking_formats_model = None
 _chat_session_model = None
 _speaker_profile_chatbot_service = None
 _scraper_service = None
@@ -99,6 +101,24 @@ def get_speaker_target_audience_model():
     return _speaker_target_audience_model
 
 
+def get_delivery_modes_model():
+    """Get singleton SpeakerDeliveryModesModel instance"""
+    global _delivery_modes_model
+    if _delivery_modes_model is None:
+        from app.models.SpeakerDeliveryModes import SpeakerDeliveryModesModel
+        _delivery_modes_model = SpeakerDeliveryModesModel()
+    return _delivery_modes_model
+
+
+def get_speaker_formats_model():
+    """Get singleton SpeakerSpeakingFormatsModel instance"""
+    global _speaking_formats_model
+    if _speaking_formats_model is None:
+        from app.models.SpeakerSpeakingFormats import SpeakerSpeakingFormatsModel
+        _speaking_formats_model = SpeakerSpeakingFormatsModel()
+    return _speaking_formats_model
+
+
 def get_chat_session_model():
     """Get singleton ChatSessionModel instance"""
     global _chat_session_model
@@ -117,6 +137,8 @@ def get_speaker_profile_chatbot_service():
             get_speaker_profile_model(),
             get_speaker_topics_model(),
             get_speaker_target_audience_model(),
+            get_delivery_modes_model(),
+            get_speaker_formats_model(),
             get_chat_session_model(),
         )
     return _speaker_profile_chatbot_service
@@ -181,7 +203,7 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _chat_session_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _google_query_scraper_service, _opportunity_service, _matched_opportunities_email_service
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _delivery_modes_model, _speaking_formats_model, _chat_session_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _google_query_scraper_service, _opportunity_service, _matched_opportunities_email_service
 
     # Reset all services
     _auth_service = None
@@ -213,6 +235,8 @@ def cleanup_resources():
     _speaker_profile_model = None
     _speaker_topics_model = None
     _speaker_target_audience_model = None
+    _delivery_modes_model = None
+    _speaking_formats_model = None
     _chat_session_model = None
     _speaker_profile_chatbot_service = None
     _scraper_service = None

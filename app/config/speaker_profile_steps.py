@@ -94,26 +94,32 @@ STEPS: List[StepDefinition] = [
     ),
     StepDefinition(
         step_name="linkedin_url",
-        form_type="url",
-        question="What is your LinkedIn profile URL?",
+        form_type="textarea",
+        question=(
+            "* Share your primary, professional social media channel URLs "
+            "(e.g., LinkedIn, Facebook, X, Instagram, etc.)."
+        ),
         required=False,
         multi_select=False,
         allowed_values=None,
-        validation_type="url",
-        validation_mode="url_only",
+        validation_type="textarea",
+        validation_mode="social_media_urls",
         split_on_conjunctions=False,
         uses_ai=False,
     ),
     StepDefinition(
         step_name="past_speaking_examples",
         form_type="textarea",
-        question="Past speaking examples or events",
+        question=(
+            "Please include organizations or events, along with relevant topics and audience types. "
+            "For each engagement, share what you can: organization name, event name, topics, audience, and when it took place (month and year)."
+        ),
         required=False,
         multi_select=False,
         allowed_values=None,
         validation_type="textarea",
         validation_mode="textarea_accept",
-        split_on_conjunctions=True,
+        split_on_conjunctions=False,
         uses_ai=False,
     ),
     StepDefinition(
@@ -143,9 +149,12 @@ STEPS: List[StepDefinition] = [
         uses_ai=True,
     ),
     StepDefinition(
-        step_name="key_takeaways",
+        step_name="testimonial",
         form_type="textarea",
-        question="What are the key takeaways for your audience?",
+        question=(
+            "Have you received any testimonials from past speaking engagements? "
+            "If you would like to share one or more, please paste them here."
+        ),
         required=False,
         multi_select=False,
         allowed_values=None,
