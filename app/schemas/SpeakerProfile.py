@@ -1,8 +1,32 @@
 """
 Pydantic schemas for Speaker Profile onboarding: init, verify-step, and final save.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any, List, Literal, Optional, Union
+
+
+# --- Past speaking example (structured; stored in profile.past_speaking_examples) ---
+
+class PastSpeakingExampleItem(BaseModel):
+    """One past engagement: organization, event, topics, audience, and date (month/year)."""
+    organization_name: str = ""
+    event_name: str = ""
+    relevant_topics: str = ""
+    audience: str = ""
+    date_month_year: str = Field(default="", description="e.g. March 2024")
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_legacy_string(cls, data: Any):
+        if isinstance(data, str):
+            return {
+                "organization_name": "",
+                "event_name": "",
+                "relevant_topics": data.strip(),
+                "audience": "",
+                "date_month_year": "",
+            }
+        return data
 
 
 # --- Topic item (from speakerTopics collection; stored in profile.topics) ---
@@ -12,7 +36,7 @@ class SpeakerTopicItem(BaseModel):
     id: str = Field(..., alias="_id")
     name: str = ""
     slug: str = ""
-
+    type: Optional[str] = None 
     class Config:
         populate_by_name = True
 
@@ -24,6 +48,7 @@ class SpeakerTargetAudienceItem(BaseModel):
     id: str = Field(..., alias="_id")
     name: str = ""
     slug: str = ""
+    type: Optional[str] = None 
 
     class Config:
         populate_by_name = True
@@ -67,7 +92,7 @@ class NextStepPayload(BaseModel):
 class VerifyStepSuccessResponse(BaseModel):
     """Chat-style success response."""
     assistant_message: str
-    normalized_answer: Union[str, List[str], List[dict]]  # list of topic objects when step is topics
+    normalized_answer: Union[str, List[str], List[dict], dict]  # dict for social URLs step; topic objects when step is topics
     next_step: dict  # NextStepPayload shape
     is_last_step: bool
     profile_id: Optional[str] = None  # Present after first valid step; FE should store and send on subsequent steps
@@ -90,16 +115,17 @@ class SpeakerProfileCreateSchema(BaseModel):
     speaking_formats: List[str] = Field(...)
     delivery_mode: List[str] = Field(...)
     linkedin_url: str = Field(...)  # validated as URL in service or via HttpUrl
-    past_speaking_examples: Optional[List[str]] = Field(default=None)  # array; each item added via verify-step
+    past_speaking_examples: Optional[List[PastSpeakingExampleItem]] = Field(default=None)
     video_links: List[str] = Field(...)
     talk_description: str = Field(..., min_length=1)
-    key_takeaways: str = Field(..., min_length=1)
+    key_takeaways: Optional[str] = Field(default=None, min_length=1)
     target_audiences: List[SpeakerTargetAudienceItem] = Field(..., min_length=1)  # array of audience objects from speakerTargetAudeince
     # Optional fields editable after profile creation (not part of verify-step)
     name_salutation: Optional[str] = Field(default=None, description="E.g. Mr, Dr., Mrs., Ms.")
     bio: Optional[str] = Field(default=None, description="Speaker bio (text area)")
     twitter: Optional[str] = Field(default=None, description="Twitter URL or handle")
     facebook: Optional[str] = Field(default=None, description="Facebook URL")
+    instagram: Optional[str] = Field(default=None, description="Instagram URL or handle")
     address_city: Optional[str] = Field(default=None, description="City")
     address_state: Optional[str] = Field(default=None, description="State/Region")
     address_country: Optional[str] = Field(default=None, description="Country")
@@ -107,6 +133,7 @@ class SpeakerProfileCreateSchema(BaseModel):
     phone_number: Optional[str] = Field(default=None, description="Phone number (without country code)")
     professional_memberships: Optional[List[str]] = Field(default=None, description="Professional memberships or affiliations (array of strings)")
     preferred_speaking_time: Optional[str] = Field(default=None, description="E.g. 10-, 20-, 30-, 40-minute or one hour")
+    testimonial: Optional[str] = Field(default=None, description="Speaker testimonial (plain text)")
 
 
 # --- PUT /speaker-profile/{profile_id} request (partial update; all fields optional) ---
@@ -119,7 +146,7 @@ class SpeakerProfileUpdateSchema(BaseModel):
     speaking_formats: Optional[List[str]] = Field(default=None)
     delivery_mode: Optional[List[str]] = Field(default=None)
     linkedin_url: Optional[str] = Field(default=None)
-    past_speaking_examples: Optional[List[str]] = Field(default=None)
+    past_speaking_examples: Optional[List[PastSpeakingExampleItem]] = Field(default=None)
     video_links: Optional[List[str]] = Field(default=None)
     talk_description: Optional[str] = Field(default=None, min_length=1)
     key_takeaways: Optional[str] = Field(default=None, min_length=1)
@@ -128,6 +155,7 @@ class SpeakerProfileUpdateSchema(BaseModel):
     bio: Optional[str] = None
     twitter: Optional[str] = None
     facebook: Optional[str] = None
+    instagram: Optional[str] = None
     address_city: Optional[str] = None
     address_state: Optional[str] = None
     address_country: Optional[str] = None
@@ -135,6 +163,7 @@ class SpeakerProfileUpdateSchema(BaseModel):
     phone_number: Optional[str] = None
     professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
+    testimonial: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -150,7 +179,7 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     speaking_formats: Optional[List[str]] = Field(default=None)
     delivery_mode: Optional[List[str]] = Field(default=None)
     linkedin_url: Optional[str] = Field(default=None)
-    past_speaking_examples: Optional[List[str]] = Field(default=None)
+    past_speaking_examples: Optional[List[PastSpeakingExampleItem]] = Field(default=None)
     video_links: Optional[List[str]] = Field(default=None)
     talk_description: Optional[str] = Field(default=None, min_length=1)
     key_takeaways: Optional[str] = Field(default=None, min_length=1)
@@ -159,6 +188,7 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     bio: Optional[str] = None
     twitter: Optional[str] = None
     facebook: Optional[str] = None
+    instagram: Optional[str] = None
     address_city: Optional[str] = None
     address_state: Optional[str] = None
     address_country: Optional[str] = None
@@ -166,6 +196,7 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     phone_number: Optional[str] = None
     professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
+    testimonial: Optional[str] = None
 
     class Config:
         populate_by_name = True
