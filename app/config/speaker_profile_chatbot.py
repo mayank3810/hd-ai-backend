@@ -79,10 +79,11 @@ MANDATORY_FIELDS = [
 # Optional fields (asked after all mandatory are filled)
 OPTIONAL_FIELDS = [
     "talk_description",
-    "testimonial",
+    "key_takeaways",
     "linkedin_url",
     "past_speaking_examples",
     "video_links",
+    "testimonial",
     "name_salutation",
     "bio",
     "twitter",
@@ -110,10 +111,11 @@ MANDATORY_FIELDS_DISPLAY = {
 # Human-readable labels for optional fields (used in LLM prompts / user-facing messages)
 OPTIONAL_FIELDS_DISPLAY = {
     "talk_description": "Talk description",
-    "testimonial": "Testimonial",
+    "key_takeaways": "Key takeaways",
     "linkedin_url": "Social media URLs",
     "past_speaking_examples": "Past speaking examples",
     "video_links": "Video links",
+    "testimonial": "Testimonial",
     "name_salutation": "Name salutation",
     "bio": "Bio",
     "twitter": "Twitter",

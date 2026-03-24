@@ -93,10 +93,37 @@ STEPS: List[StepDefinition] = [
         uses_ai=False,
     ),
     StepDefinition(
+        step_name="talk_description",
+        form_type="textarea",
+        question="Describe your talk or expertise",
+        required=False,
+        multi_select=False,
+        allowed_values=None,
+        validation_type="textarea",
+        validation_mode="semantic_text_ai",
+        min_length=20,
+        max_length=2000,
+        split_on_conjunctions=False,
+        uses_ai=True,
+    ),
+    StepDefinition(
+        step_name="key_takeaways",
+        form_type="textarea",
+        question="What key takeaways would you like to highlight from your talks?",
+        required=False,
+        multi_select=False,
+        allowed_values=None,
+        validation_type="textarea",
+        validation_mode="semantic_text_ai",
+        max_length=2000,
+        split_on_conjunctions=False,
+        uses_ai=True,
+    ),
+    StepDefinition(
         step_name="linkedin_url",
         form_type="textarea",
         question=(
-            "* Share your primary, professional social media channel URLs "
+            "Share your primary, professional social media channel URLs "
             "(e.g., LinkedIn, Facebook, X, Instagram, etc.)."
         ),
         required=False,
@@ -111,8 +138,8 @@ STEPS: List[StepDefinition] = [
         step_name="past_speaking_examples",
         form_type="textarea",
         question=(
-            "Please include organizations or events, along with relevant topics and audience types. "
-            "For each engagement, share what you can: organization name, event name, topics, audience, and when it took place (month and year)."
+            "Please share any past speaking engagements in your own words—where you spoke, what it was about, "
+            "who the audience was, and roughly when. You can write in paragraphs or short bullets per event."
         ),
         required=False,
         multi_select=False,
@@ -133,20 +160,6 @@ STEPS: List[StepDefinition] = [
         validation_mode="url_only",
         split_on_conjunctions=False,
         uses_ai=False,
-    ),
-    StepDefinition(
-        step_name="talk_description",
-        form_type="textarea",
-        question="Describe your talk or expertise",
-        required=False,
-        multi_select=False,
-        allowed_values=None,
-        validation_type="textarea",
-        validation_mode="semantic_text_ai",
-        min_length=20,
-        max_length=2000,
-        split_on_conjunctions=False,
-        uses_ai=True,
     ),
     StepDefinition(
         step_name="testimonial",

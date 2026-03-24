@@ -557,7 +557,13 @@ async def verify_step(
     logger.info("verify-step: branch=success")
     normalized = result.get("normalized_value")
     # When optional step is skipped (normalized is None), use user's typed answer for conversation and response; profile field stays null/empty
-    if normalized is None and body.answer is not None and body.step in ("linkedin_url", "past_speaking_examples", "video_links", "testimonial"):
+    if normalized is None and body.answer is not None and body.step in (
+        "linkedin_url",
+        "past_speaking_examples",
+        "video_links",
+        "testimonial",
+        "key_takeaways",
+    ):
         user_answer_str = (
             body.answer if isinstance(body.answer, str) else " ".join(str(x).strip() for x in body.answer if x)
         )

@@ -1273,6 +1273,7 @@ def validate_full_profile(
         "past_speaking_examples": ("past_speaking_examples", "text"),
         "video_links": ("video_links", "text"),
         "talk_description": ("talk_description", "text"),
+        "key_takeaways": ("key_takeaways", "text"),
         "testimonial": ("testimonial", "text"),
         "target_audiences": ("target_audiences", "selection"),
     }
