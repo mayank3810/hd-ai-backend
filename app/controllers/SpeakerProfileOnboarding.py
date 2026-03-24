@@ -5,7 +5,7 @@ Stateless for init and verify-step; JWT required for final save.
 import logging
 import os
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postmarker.core import PostmarkClient
 
 from app.config.speaker_profile_steps import get_first_step, get_next_step, get_step_by_name, is_last_step, step_to_response
@@ -47,16 +47,53 @@ async def get_my_speaker_profiles(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Get all speaker profiles. Admin only. Returns a list (newest first); empty list if none.
+    Admins: all speaker profiles. Other users: their own profiles only (newest first).
     """
     try:
-        user_type = jwt_payload.get("userType")
-        if user_type != "admin":
+        token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not token_user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
+            )
+        if jwt_payload.get("userType") == "admin":
+            profiles = await model.get_all_profiles()
+        else:
+            profiles = await model.get_profiles_by_user_id(str(token_user_id))
+        return Utils.create_response(profiles, True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.get("/get-speaker-profiles-by-user", response_model=ServerResponse)
+async def get_speaker_profiles_by_user_id(
+    user_id: str = Query(..., description="User id whose speaker profiles to return"),
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+):
+    """
+    Get speaker profiles for a given user. Authenticated users may only request their own user_id;
+    admins may request any user_id. Returns a list (newest first); empty list if none.
+    """
+    try:
+        token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not token_user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
+            )
+        is_admin = jwt_payload.get("userType") == "admin"
+        if not is_admin and str(token_user_id) != str(user_id):
             raise HTTPException(
                 status_code=403,
-                detail={"data": None, "error": "Only admins can access this resource", "success": False},
+                detail={"data": None, "error": "You can only access your own speaker profiles.", "success": False},
             )
-        profiles = await model.get_all_profiles()
+        profiles = await model.get_profiles_by_user_id(user_id)
         return Utils.create_response(profiles, True)
     except HTTPException:
         raise
@@ -74,19 +111,27 @@ async def get_speaker_profile_by_id(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Get a speaker profile by id. Admin only.
+    Get a speaker profile by id. Admins may read any profile; other users only if the profile belongs to them.
     """
     try:
-        if jwt_payload.get("userType") != "admin":
+        token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not token_user_id:
             raise HTTPException(
-                status_code=403,
-                detail={"data": None, "error": "Only admins can access this resource", "success": False},
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
             )
         profile = await model.get_profile(profile_id)
         if not profile:
             raise HTTPException(
                 status_code=404,
                 detail={"data": None, "error": "Profile not found.", "success": False},
+            )
+        is_admin = jwt_payload.get("userType") == "admin"
+        owner_id = profile.get("user_id")
+        if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
+            raise HTTPException(
+                status_code=403,
+                detail={"data": None, "error": "You do not have access to this profile.", "success": False},
             )
         return Utils.create_response(profile, True)
     except HTTPException:
@@ -106,18 +151,26 @@ async def update_speaker_profile(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Update a speaker profile. Admin only. Only provided fields are updated.
+    Update a speaker profile. Admins may update any profile; other users only their own.
     """
-    if jwt_payload.get("userType") != "admin":
+    token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    if not token_user_id:
         raise HTTPException(
-            status_code=403,
-            detail={"data": None, "error": "Only admins can access this resource", "success": False},
+            status_code=401,
+            detail={"data": None, "error": "User ID not found in token.", "success": False},
         )
     profile = await model.get_profile(profile_id)
     if not profile:
         raise HTTPException(
             status_code=404,
             detail={"data": None, "error": "Profile not found.", "success": False},
+        )
+    is_admin = jwt_payload.get("userType") == "admin"
+    owner_id = profile.get("user_id")
+    if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
+        raise HTTPException(
+            status_code=403,
+            detail={"data": None, "error": "You do not have access to this profile.", "success": False},
         )
     updates = body.model_dump(exclude_unset=True, by_alias=True)
     if not updates:
@@ -170,18 +223,26 @@ async def resume_onboarding(
     """
     Resume onboarding: return stored conversation and current step payload.
     FE renders conversation as chat, shows step as form, then calls POST /verify-step as in create-profile.
-    Admin only.
+    Admins may resume any profile; other users only their own.
     """
-    if jwt_payload.get("userType") != "admin":
+    token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    if not token_user_id:
         raise HTTPException(
-            status_code=403,
-            detail={"data": None, "error": "Only admins can access this resource", "success": False},
+            status_code=401,
+            detail={"data": None, "error": "User ID not found in token.", "success": False},
         )
     profile = await model.get_profile(profile_id)
     if not profile:
         raise HTTPException(
             status_code=404,
             detail={"data": None, "error": "Profile not found.", "success": False},
+        )
+    is_admin = jwt_payload.get("userType") == "admin"
+    owner_id = profile.get("user_id")
+    if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
+        raise HTTPException(
+            status_code=403,
+            detail={"data": None, "error": "You do not have access to this profile.", "success": False},
         )
     conversation = profile.get("conversation") or []
     current_step_name = profile.get("current_step")
