@@ -1,7 +1,7 @@
 """
 Pydantic schemas for Speaker Profile onboarding: init, verify-step, and final save.
 """
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import Any, List, Literal, Optional, Union
 
 
@@ -173,8 +173,8 @@ class SpeakerProfileUpdateSchema(BaseModel):
 
 class SpeakerProfileCreateFormSchema(BaseModel):
     """Form-style payload for creating a new speaker profile without conversational onboarding."""
-    full_name: Optional[str] = Field(default=None, min_length=1)
-    email: Optional[str] = Field(default=None, min_length=1)
+    full_name: str = Field(..., min_length=2, max_length=50)
+    email: EmailStr = Field(...)
     topics: Optional[List[SpeakerTopicItem]] = Field(default=None, min_length=1)
     speaking_formats: Optional[List[str]] = Field(default=None)
     delivery_mode: Optional[List[str]] = Field(default=None)

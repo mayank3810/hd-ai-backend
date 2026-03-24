@@ -1,8 +1,11 @@
-from app.schemas.User import UserSchema
+from typing import Optional
+
+from pydantic import EmailStr, TypeAdapter, ValidationError
+
+from app.schemas.User import UserSchema, UserType
 from app.models.User import UserModel
 from app.models.Otp import OTPModel
 from app.helpers.Utilities import Utils
-from pydantic import ValidationError
 from datetime import datetime, timedelta
 from fastapi import HTTPException, UploadFile
 from postmarker.core import PostmarkClient
@@ -127,6 +130,54 @@ class AuthService:
                 "data": None,
                 "error": str(e)
             }
+
+    async def create_speaker_user(
+        self,
+        email: str,
+        full_name: str,
+        plain_password: str,
+        admin_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Insert a users row for a new speaker. Caller must ensure the email is not already taken.
+        Email should already be normalized (e.g. validated with EmailStr).
+        """
+        try:
+            normalized_email = TypeAdapter(EmailStr).validate_python((email or "").strip())
+        except ValidationError as e:
+            return {"success": False, "error": f"Invalid email: {e}"}
+
+        fn = (full_name or "").strip()
+        if len(fn) < 2 or len(fn) > 50:
+            return {"success": False, "error": "Full name must be between 2 and 50 characters."}
+
+        if len(plain_password) < 8:
+            return {"success": False, "error": "Password must be at least 8 characters."}
+
+        hashed_password = Utils.hash_password(plain_password)
+        now = datetime.utcnow()
+        user_data_dict = {
+            "email": normalized_email,
+            "password": hashed_password,
+            "fullName": fn,
+            "userType": UserType.USER,
+            "createdOn": now,
+            "updatedOn": now,
+        }
+        if admin_id:
+            user_data_dict["adminId"] = admin_id
+
+        try:
+            user_id = await self.user_model.create_user(user_data_dict)
+            return {
+                "success": True,
+                "user_id": str(user_id),
+                "email": normalized_email,
+            }
+        except PydanticValidationError as e:
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def send_otp_email(self, email: str):
         """

@@ -4,9 +4,12 @@ Stateless for init and verify-step; JWT required for final save.
 """
 import logging
 import os
+import secrets
 from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postmarker.core import PostmarkClient
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from app.config.speaker_profile_steps import get_first_step, get_next_step, get_step_by_name, is_last_step, step_to_response
 from app.middleware.JWTVerification import jwt_validator
@@ -28,17 +31,93 @@ from app.services.SpeakerProfileConversation import (
     generate_chatbot_welcome_message,
 )
 from app.dependencies import (
+    get_auth_service,
     get_speaker_profile_model,
     get_speaker_topics_model,
     get_speaker_target_audience_model,
     get_chat_session_model,
     get_speaker_profile_chatbot_service,
 )
+from app.helpers.SpeakerCredentialsEmail import send_speaker_credentials_email
 from app.helpers.Utilities import Utils
 from app.schemas.ServerResponse import ServerResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/speaker-profile", tags=["Speaker Profile Onboarding"])
+
+
+async def _provision_speaker_profile_with_new_user(
+    *,
+    model,
+    auth_service,
+    profile_data: dict,
+    jwt_actor_id: str,
+) -> dict:
+    """
+    Normalize email/full_name, reject duplicates, create users row + speaker profile,
+    send credentials email (best-effort). Returns inserted profile document.
+    """
+    email_raw = profile_data.get("email")
+    full_name_raw = profile_data.get("full_name")
+    if email_raw is None or full_name_raw is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": "email and full_name are required.", "success": False},
+        )
+    try:
+        email = TypeAdapter(EmailStr).validate_python(str(email_raw).strip())
+    except ValidationError:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": "Invalid email address.", "success": False},
+        )
+
+    full_name = str(full_name_raw).strip()
+    if len(full_name) < 2 or len(full_name) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "data": None,
+                "error": "full_name must be between 2 and 50 characters.",
+                "success": False,
+            },
+        )
+
+    profile_data = {**profile_data, "email": email, "full_name": full_name}
+
+    if await model.get_profile_by_email(email):
+        raise HTTPException(
+            status_code=409,
+            detail={"data": None, "error": "A speaker profile already exists for this email.", "success": False},
+        )
+
+    if await auth_service.user_model.get_user({"email": email}):
+        raise HTTPException(
+            status_code=409,
+            detail={"data": None, "error": "A user with this email already exists.", "success": False},
+        )
+
+    plain_password = secrets.token_urlsafe(12)
+    created = await auth_service.create_speaker_user(
+        email=email,
+        full_name=full_name,
+        plain_password=plain_password,
+        admin_id=str(jwt_actor_id),
+    )
+    if not created.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "data": None,
+                "error": created.get("error", "Could not create user account."),
+                "success": False,
+            },
+        )
+
+    new_user_id = created["user_id"]
+    doc = await model.create_speaker_profile(new_user_id, profile_data)
+    send_speaker_credentials_email(email, full_name, plain_password)
+    return doc
 
 
 @router.get("/get-speaker-profiles", response_model=ServerResponse)
@@ -189,10 +268,12 @@ async def create_speaker_profile(
     body: SpeakerProfileCreateFormSchema,
     jwt_payload: dict = Depends(jwt_validator),
     model=Depends(get_speaker_profile_model),
+    auth_service=Depends(get_auth_service),
 ):
     """
     Create a new speaker profile in one shot using a form-style payload (no conversational AI / stepwise onboarding).
-    All fields are optional and behave like the edit-profile API; only provided fields are stored.
+    Requires email and full_name; provisions a new users account for that email and links the profile to it.
+    Optional fields are stored when provided.
     """
     user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
     if not user_id:
@@ -202,13 +283,12 @@ async def create_speaker_profile(
         )
 
     profile_data = body.model_dump(exclude_unset=True, by_alias=True)
-    if not profile_data:
-        raise HTTPException(
-            status_code=400,
-            detail={"data": None, "error": "No data provided to create profile.", "success": False},
-        )
-
-    doc = await model.create_speaker_profile(str(user_id), profile_data)
+    doc = await _provision_speaker_profile_with_new_user(
+        model=model,
+        auth_service=auth_service,
+        profile_data=profile_data,
+        jwt_actor_id=str(user_id),
+    )
     return Utils.create_response({"id": str(doc["_id"]), "profile": doc}, True)
 
 
@@ -580,6 +660,7 @@ async def save_speaker_profile(
     model=Depends(get_speaker_profile_model),
     speaker_topics_model=Depends(get_speaker_topics_model),
     speaker_target_audience_model=Depends(get_speaker_target_audience_model),
+    auth_service=Depends(get_auth_service),
 ):
     """
     Save the full speaker profile after onboarding. Requires JWT.
@@ -607,5 +688,10 @@ async def save_speaker_profile(
         )
     
     profile_data = body.model_dump(by_alias=True)
-    doc = await model.create_speaker_profile(str(user_id), profile_data)
+    doc = await _provision_speaker_profile_with_new_user(
+        model=model,
+        auth_service=auth_service,
+        profile_data=profile_data,
+        jwt_actor_id=str(user_id),
+    )
     return {"success": True, "id": str(doc["_id"])}
