@@ -6,6 +6,8 @@ import os
 import re
 from typing import List, Optional, Tuple
 
+from bson import ObjectId
+
 from app.helpers.Database import MongoDB
 
 
@@ -120,3 +122,27 @@ class SpeakerOptionCatalogModel:
         if not created:
             return None, "invalid_name"
         return self._to_public(created), None
+
+    @staticmethod
+    def _raw_is_non_system(doc: dict) -> bool:
+        """True when type is set and not system (legacy missing/empty type counts as system)."""
+        t = doc.get("type")
+        if t is None or t == "" or t == "system":
+            return False
+        return True
+
+    async def delete_one_non_system(self, doc_id: str) -> Optional[str]:
+        """
+        Delete by _id only for non-system rows.
+        Returns None on success; otherwise 'invalid_id', 'not_found', or 'system_topic'.
+        """
+        if not doc_id or not ObjectId.is_valid(doc_id):
+            return "invalid_id"
+        oid = ObjectId(doc_id)
+        doc = await self.collection.find_one({"_id": oid})
+        if not doc:
+            return "not_found"
+        if not self._raw_is_non_system(doc):
+            return "system_topic"
+        await self.collection.delete_one({"_id": oid})
+        return None
