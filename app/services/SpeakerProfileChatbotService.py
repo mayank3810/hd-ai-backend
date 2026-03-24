@@ -61,8 +61,10 @@ _SOCIAL_URL_FIELD_RULES = (
 )
 
 _INVALID_FIXED_LIST_GUIDANCE = (
-    "Tell the user in one short sentence (second person—use 'you/your', not 'they/their'): e.g. "
-    "'If your choice isn't on this list, you can add or change it anytime from your speaker profile.' "
+    "Tell the user in one short sentence (second person—use 'you/your', not 'they/their'). "
+    "When full_name is in profile_json (or the user gave their name earlier in chat), start with their first name for a conversational tone—"
+    "e.g. 'Alex, if your choice isn't on this list, you can add or change it anytime from your speaker profile.' "
+    "If you don't have a name, use the same line without a leading name: 'If your choice isn't on this list, you can add or change it anytime from your speaker profile.' "
     "Then ask ONLY the next question in order—do not paste the catalog again, do not re-ask the same field with a full option list, "
     "and do not insist they pick from the list."
 )
@@ -72,14 +74,14 @@ _FIXED_LIST_ADVANCE_AFTER_OFF_LIST = (
     "OFF-LIST OR REFUSED-LIST (fixed catalog fields): If the user's answer does not match any allowed catalog name "
     "(topics, speaking_formats, delivery_mode, or target_audiences), treat that step as DONE for the conversation. "
     "In ONE assistant message: (1) the one short 'you/your' sentence from the guidance above; "
-    "(2) immediately ask ONLY the next question in REQUIRED FIELD ORDER—never a second question. "
+    "(2) then the next field in REQUIRED FIELD ORDER only—never re-ask the same step you just closed (no second question on that field). "
     "FORBIDDEN in that message after off-list topics: any question about topics, speaking about, subject areas, "
     "or 'What topics would you like…'—the next step after topics is always speaking_formats. "
     "FORBIDDEN after off-list speaking_formats: re-asking formats; next is delivery_mode. "
     "FORBIDDEN after off-list delivery_mode: re-asking delivery; next is target_audiences. "
     "FORBIDDEN after off-list target_audiences: re-asking audiences; next is the first optional field (talk_description). "
     "Call upsert_speaker_profile with only fields that matched the catalog; omit fields with zero matches—do not block the flow. "
-    "Example (topics off-list): first the one short profile sentence, then a formats question whose choices are BULLETS (one catalog name per line, e.g. lines starting with •), "
+    "Example (topics off-list): first the one short profile sentence (with first name when known, e.g. 'Riley, if your choice isn't on this list…'), then a formats question whose choices are BULLETS (one catalog name per line, e.g. lines starting with •), "
     "not a comma-separated run-on sentence. "
     "WRONG: appending 'What topics would you like to speak about?' after the profile sentence."
 )
@@ -96,11 +98,22 @@ _CATALOG_OPTIONS_BULLET_FORMAT = (
 
 _FIXED_LIST_USER_DEFERS = (
     "If the user says they will skip, or add or change these selections later from their profile "
-    "(or similar), do not insist or repeat the full list: briefly tell them they can update their profile anytime, then move to the next question."
+    "(or similar), do not insist or repeat the full list: briefly tell them they can update their profile anytime "
+    "(use first name from full_name when known, e.g. 'Jordan, you can update that anytime from your profile'), then move to the next question."
 )
 
 _PROFILE_COMPLETION_MESSAGE = (
     "Your speaker profile is complete. You may close this window and review your profile. Thank you!"
+)
+
+# Warmer than bare Q&A; prescribed question strings stay verbatim after the opener.
+_CONVERSATIONAL_ACK_BEFORE_QUESTION = (
+    "CONVERSATIONAL WRAPPER: Whenever you move to the next profile question (required or optional), begin with ONE short sentence—"
+    "acknowledge their last answer, react warmly, or add one helpful line on why the next field matters (second person, professional, ≤25 words). "
+    "Then ask the next question in the same message. Do not alter wording where instructions require EXACT or verbatim text—paste that question exactly after your opener (blank line between is fine). "
+    "For catalog steps, opener → then your short intro line for that field → then bullet list (per CATALOG CHOICE QUESTIONS). "
+    "If the message already starts with the off-list profile sentence (optionally with a leading first name, e.g. 'Sam, if your choice isn't on this list…'), you may follow it directly with the next question/bullets without a redundant second ack, or add one brief bridge if it reads more natural. "
+    "Still use ONLY the exact completion message after mark_profile_complete—no preamble there."
 )
 
 # Onboarding LLM may only offer catalog rows marked system (plus legacy docs without type).
@@ -635,14 +648,16 @@ class SpeakerProfileChatbotService:
                 "Call after EVERY valid answer. "
 
                 "CONVERSATION RULES: "
-                "Ask ONLY ONE question at a time. "
+                "Ask for only ONE new profile field per turn (one main question), optionally preceded by one short ack sentence per CONVERSATIONAL WRAPPER—do not bundle two different fields in one turn. "
                 "Required fields cannot be skipped EXCEPT for catalog fields (topics, speaking_formats, delivery_mode, target_audiences): "
                 "if the user's answer matches no catalog option or they refuse the list, that counts as having addressed that step—advance to the next field in order; never re-ask that same catalog question in the same turn. "
                 "If the user evades with an empty or unrelated non-answer, politely ask again. "
                 "If user provides multiple fields at once, extract and save all. "
                 "Adapt questions naturally using chat history and profile_json. "
                 "Stay focused ONLY on onboarding. "
-                "Never announce that required fields are done or that you are moving to optional questions—just ask the next question with no preceding sentence. "
+                "Never announce that required fields are done or that you are moving to optional questions—use the CONVERSATIONAL WRAPPER instead of process-speak. "
+                + _CONVERSATIONAL_ACK_BEFORE_QUESTION
+                + " "
 
                 "REQUIRED FIELD ORDER (STRICT): "
                 "You MUST collect required fields in EXACT order: topics, speaking_formats, delivery_mode, target_audiences. "
@@ -687,10 +702,6 @@ class SpeakerProfileChatbotService:
                 "(organization_name, event_name, relevant_topics, audience, date_month_year)—extract best effort; do not echo those key names to the user. "
                 "Then ask for video_links (YouTube/Vimeo-style URLs or skip). Last optional: testimonial—invite quotes or feedback from past speaking. "
 
-                "CRITICAL BEHAVIOR RULE: "
-                "When transitioning from required fields to optional fields, you MUST directly ask the next question with NO transition text. "
-                "Your message must contain ONLY the question itself. No prefix. No explanation. No acknowledgment. No filler. "
-
                 "STRICTLY FORBIDDEN: "
                 "Do NOT say any sentence that mentions required fields, optional fields, completion, or transition. "
                 "Never say phrases like: "
@@ -703,11 +714,12 @@ class SpeakerProfileChatbotService:
                 "'Now the optional part'. "
 
                 "RESPONSE FORMAT RULE: "
-                "When it is time for an optional question (no catalog list), output ONLY the question. "
+                "Use CONVERSATIONAL WRAPPER: one short ack/helpful sentence, then the question. "
+                "When it is time for an optional free-text question, keep the question phrase itself unchanged from instructions (e.g. talk description wording, exact key_takeaways line). "
                 "When it is time for a required catalog question (topics, speaking_formats, delivery_mode, target_audiences), "
-                "format choices as bullet lists per CATALOG CHOICE QUESTIONS above—not comma-separated inline lists. "
-                "Example optional (correct): 'Please provide a description of your talk, including the title and overview.' "
-                "Example optional (incorrect): 'Now that we’re done, please provide a description of your talk, including the title and overview.' "
+                "format choices as bullet lists per CATALOG CHOICE QUESTIONS—not comma-separated inline lists. "
+                "Example optional (good): 'Thanks—that helps.\\n\\nPlease provide a description of your talk, including the title and overview.' "
+                "Example optional (bad—process meta): 'Now that we’re done with required fields, please provide a description…' "
 
                 "SKIP HANDLING: "
                 "If the user skips or declines an optional field, briefly acknowledge (e.g., 'No problem.') and IMMEDIATELY ask the next optional question. "
@@ -758,11 +770,13 @@ class SpeakerProfileChatbotService:
 
                 Important Conversation Rules
 
-                • Ask ONLY ONE question at a time.
+                • One new profile field per turn (one main question); you may add one short ack sentence before it (see CONVERSATIONAL WRAPPER).
                 • Required fields cannot be skipped EXCEPT: for catalog fields, if the user's answer matches nothing on the list or they refuse the list, advance to the next field—do not re-ask that catalog question.
                 • If the user avoids answering with an empty evasion, politely ask again.
                 • If the user provides multiple fields at once, extract and store them.
                 • Always guide the user to complete onboarding.
+
+                {_CONVERSATIONAL_ACK_BEFORE_QUESTION}
 
                 {_CATALOG_OPTIONS_BULLET_FORMAT}
 
@@ -846,7 +860,7 @@ class SpeakerProfileChatbotService:
 
                 Optional fields flow
 
-                After all required fields are collected, you MUST ask each optional field one at a time: talk_description, key_takeaways, linkedin_url (social URLs question), past_speaking_examples, video_links, testimonial (last). You must ask every optional question. If the user skips or declines, acknowledge and move to the next optional question. Only after you have asked the last optional question (testimonial—user answered or skipped) may you call mark_profile_complete. FORBIDDEN: Never say 'Now that we have all the required fields', 'Let\'s move on to optional questions', 'Let\'s move on to some optional questions', or any sentence that announces required vs optional. When it is time for the next question (e.g. talk description), output ONLY that question—no preceding sentence.
+                After all required fields are collected, you MUST ask each optional field one at a time: talk_description, key_takeaways, linkedin_url (social URLs question), past_speaking_examples, video_links, testimonial (last). You must ask every optional question. If the user skips or declines, acknowledge and move to the next optional question. Only after you have asked the last optional question (testimonial—user answered or skipped) may you call mark_profile_complete. FORBIDDEN: Never say 'Now that we have all the required fields', 'Let\'s move on to optional questions', 'Let\'s move on to some optional questions', or any sentence that announces required vs optional. For each next question, use CONVERSATIONAL WRAPPER (short ack or helpful line, then the question—verbatim where specified).
 
                 Completion
 
