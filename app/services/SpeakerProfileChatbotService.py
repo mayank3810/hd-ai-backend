@@ -6,9 +6,16 @@ import json
 import logging
 import os
 import re
+import secrets
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
+from pydantic import EmailStr, TypeAdapter, ValidationError
+
+from app.helpers.SpeakerCredentialsEmail import send_speaker_credentials_email
+from app.helpers.Utilities import Utils
+from app.schemas.User import UserType
 
 from app.config.speaker_profile_chatbot import (
     MANDATORY_FIELDS,
@@ -19,6 +26,21 @@ from app.config.speaker_profile_chatbot import (
 from app.models.SpeakerProfile import PROFILE_FIELDS
 
 logger = logging.getLogger(__name__)
+
+
+def _full_name_for_user_account(email: str, full_name: str) -> str:
+    """Ensure 2–50 chars for create_speaker_user; chatbot may only have email local-part early."""
+    fn = (full_name or "").strip()
+    if len(fn) > 50:
+        return fn[:50]
+    if len(fn) >= 2:
+        return fn
+    local = (email.split("@")[0] if email else "").strip() or "speaker"
+    base = fn if fn else local
+    if len(base) < 2:
+        base = "Speaker"
+    return base[:50]
+
 
 _EMAIL_REGEX = re.compile(
     r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}"
@@ -145,6 +167,12 @@ _FREE_TEXT_NON_CATALOG_RULES = (
     "do NOT call upsert_speaker_profile with key_takeaways; do not save it; give one short friendly reply that it doesn't sound like "
     "real takeaways from their talks and re-ask the same key_takeaways question (or offer to skip)—no 'list' language, no continue pause. "
     "Same idea for talk_description and testimonial when the answer is clearly not on-topic for that question."
+)
+
+# Backend may create a users row + credentials email when email is first saved; chat must never disclose that.
+_CHATBOT_SILENT_PLATFORM_ACCOUNT = (
+    "PLATFORM LOGIN (silent, backend-only): When the user's email is first saved, the system may create a platform user and send login details by email. "
+    "You MUST NEVER tell the user you created an account, login, password, sign-in, credentials, or that they will get/were sent login information—only discuss their speaker profile onboarding."
 )
 
 # Models often compress catalog questions into "A, B, or C?" after seeing compact examples—reinforce bullets.
@@ -451,6 +479,7 @@ class SpeakerProfileChatbotService:
         delivery_modes_model,
         speaking_formats_model,
         chat_session_model,
+        user_model,
     ):
         self.profile_model = speaker_profile_model
         self.topics_model = speaker_topics_model
@@ -458,7 +487,53 @@ class SpeakerProfileChatbotService:
         self.delivery_modes_model = delivery_modes_model
         self.speaking_formats_model = speaking_formats_model
         self.chat_session_model = chat_session_model
+        self.user_model = user_model
         self._catalog_name_lists: Optional[Dict[str, List[str]]] = None
+
+    async def _user_id_for_new_chatbot_profile(
+        self,
+        email: str,
+        full_name: str,
+    ) -> Optional[str]:
+        """
+        If the chat request already has a logged-in user, attach that id.
+        Else if a users row exists for this email, attach it.
+        Else create user (hash password, insert, email credentials)—silent in chat.
+        """
+        # if session_user_id:
+        #     return session_user_id
+        try:
+            normalized_email = TypeAdapter(EmailStr).validate_python((email or "").strip())
+        except ValidationError:
+            logger.warning("Chatbot: invalid email for user row: %s", email)
+            return None
+        try:
+            existing = await self.user_model.get_user({"email": normalized_email})
+        except Exception as e:
+            logger.warning("Chatbot: user lookup failed for %s: %s", normalized_email, e)
+            return None
+        if existing is not None and getattr(existing, "id", None) is not None:
+            return str(existing.id)
+
+        plain_password = secrets.token_urlsafe(12)
+        hashed_password = Utils.hash_password(plain_password)
+        fn = _full_name_for_user_account(normalized_email, full_name)
+        now = datetime.utcnow()
+        user_data_dict = {
+            "email": normalized_email,
+            "password": hashed_password,
+            "fullName": fn,
+            "userType": UserType.USER,
+            "createdOn": now,
+            "updatedOn": now,
+        }
+        try:
+            inserted_id = await self.user_model.create_user(user_data_dict)
+        except Exception as e:
+            logger.warning("Chatbot: create_user failed for %s: %s", normalized_email, e)
+            return None
+        send_speaker_credentials_email(normalized_email, fn, plain_password)
+        return str(inserted_id)
 
     async def _load_catalog_name_lists(self) -> Dict[str, List[str]]:
         async def sorted_names(model) -> List[str]:
@@ -661,6 +736,10 @@ class SpeakerProfileChatbotService:
         full_name = (args.get("full_name") or "").strip()
         profile_doc["email"] = email
         profile_doc["full_name"] = full_name or email.split("@")[0]  # Use email prefix if no name
+        resolved_user_id = await self._user_id_for_new_chatbot_profile(
+            email,
+            profile_doc["full_name"]
+        )
         created = await self.profile_model.create_chatbot_profile(profile_doc, user_id)
         # isCompleted is set only when LLM calls mark_profile_complete (after all questions done)
         return {"action": "created", "profile": created}
@@ -760,6 +839,8 @@ class SpeakerProfileChatbotService:
                 + _FIXED_LIST_USER_FACING_TRUTH
                 + " "
                 + _FREE_TEXT_NON_CATALOG_RULES
+                + " "
+                + _CHATBOT_SILENT_PLATFORM_ACCOUNT
                 + " "
 
                 "EXISTING PROFILE CONTEXT: "
@@ -927,6 +1008,8 @@ class SpeakerProfileChatbotService:
                 {_FIXED_LIST_USER_FACING_TRUTH}
 
                 {_FREE_TEXT_NON_CATALOG_RULES}
+
+                {_CHATBOT_SILENT_PLATFORM_ACCOUNT}
 
                 Email Rules
 
@@ -1110,7 +1193,12 @@ class SpeakerProfileChatbotService:
             elif action == "created" and profile:
                 name = (profile.get("full_name") or "").strip() or "you"
                 email = (profile.get("email") or "").strip() or ""
-                prompt = f"Briefly tell the user their profile was created for {name}" + (f" ({email})" if email else "") + ". Then naturally ask for the first required field (topics - what topics they speak about) in a conversational way, reframed - do not ask the question verbatim."
+                prompt = (
+                    f"Briefly tell the user their speaker profile was started for {name}"
+                    + (f" ({email})" if email else "")
+                    + ". Then naturally ask for the first required field (topics - what topics they speak about) in a conversational way, reframed - do not ask the question verbatim. "
+                    "STRICTLY FORBIDDEN in your reply: any mention of creating a user account, login, password, sign-in, credentials, temporary password, or that they received an email about an account—only discuss the speaker profile onboarding."
+                )
                 try:
                     s = client.chat.completions.create(
                         model="gpt-4o-mini",
@@ -1122,9 +1210,21 @@ class SpeakerProfileChatbotService:
                 except Exception:
                     pass
                 if not assistant_content:
-                    assistant_content = f"Your profile has been created for {name}" + (f" ({email})!" if email else "!") + f" What would you like to add? You can add: Topics, Speaking formats, Delivery mode, Target audiences, Talk description, Key takeaways, and more."
+                    assistant_content = (
+                        f"Great—we've started your speaker profile for {name}"
+                        + (f" ({email})" if email else "")
+                        + ". What topics do you speak about? You can pick one or more from the list when you're ready."
+                    )
             else:
-                prompt = "Briefly tell the user what was done." if action == "created" else ("Briefly tell the user what was updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
+                if action == "created":
+                    prompt = (
+                        "Briefly acknowledge progress on their speaker profile only. "
+                        "FORBIDDEN: any mention of user account, login, password, sign-in, or credentials email."
+                    )
+                elif action == "updated":
+                    prompt = "Briefly tell the user what was updated."
+                else:
+                    prompt = "How can I assist you today to create a speaker profile? I'll need your email address to get started."
                 if not assistant_content:
                     try:
                         s = client.chat.completions.create(
@@ -1140,7 +1240,15 @@ class SpeakerProfileChatbotService:
                     if profile_marked_complete:
                         assistant_content = _PROFILE_COMPLETION_MESSAGE
                     else:
-                        assistant_content = "Your profile has been created!" if action == "created" else ("Your profile has been updated." if action == "updated" else "How can I assist you today to create a speaker profile? I'll need your email address to get started.")
+                        assistant_content = (
+                            "Your speaker profile is off to a good start!"
+                            if action == "created"
+                            else (
+                                "Your profile has been updated."
+                                if action == "updated"
+                                else "How can I assist you today to create a speaker profile? I'll need your email address to get started."
+                            )
+                        )
 
         if profile_marked_complete:
             assistant_content = _PROFILE_COMPLETION_MESSAGE

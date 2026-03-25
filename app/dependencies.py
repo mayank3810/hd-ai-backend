@@ -38,6 +38,7 @@ _delivery_modes_model = None
 _speaking_formats_model = None
 _chat_session_model = None
 _speaker_profile_chatbot_service = None
+_user_model = None
 _scraper_service = None
 _url_scraper_rapidapi_service = None
 _google_query_scraper_service = None
@@ -119,6 +120,15 @@ def get_speaker_formats_model():
     return _speaking_formats_model
 
 
+def get_user_model():
+    """Get singleton UserModel instance (users collection)."""
+    global _user_model
+    if _user_model is None:
+        from app.models.User import UserModel
+        _user_model = UserModel()
+    return _user_model
+
+
 def get_chat_session_model():
     """Get singleton ChatSessionModel instance"""
     global _chat_session_model
@@ -140,6 +150,7 @@ def get_speaker_profile_chatbot_service():
             get_delivery_modes_model(),
             get_speaker_formats_model(),
             get_chat_session_model(),
+            get_user_model(),
         )
     return _speaker_profile_chatbot_service
 
@@ -239,6 +250,7 @@ def cleanup_resources():
     _speaking_formats_model = None
     _chat_session_model = None
     _speaker_profile_chatbot_service = None
+    _user_model = None
     _scraper_service = None
     _url_scraper_rapidapi_service = None
     _google_query_scraper_service = None
