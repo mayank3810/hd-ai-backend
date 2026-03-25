@@ -38,18 +38,15 @@ _CHATBOT_OPTIONAL_STEPS = [
 _PAST_SPEAKING_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
-        "organization_name": {"type": "string"},
-        "event_name": {"type": "string"},
-        "relevant_topics": {"type": "string"},
-        "audience": {"type": "string"},
-        "date_month_year": {"type": "string", "description": "Month and year, e.g. March 2024"},
+        "organization_name": {"type": "string", "description": "Host organization or company"},
+        "event_name": {"type": "string", "description": "Event or conference name if known; optional"},
+        "date_month_year": {"type": "string", "description": "When, e.g. March 2024"},
     },
 }
 
 # User-facing question only (no field-by-field template); LLM extracts structure for DB.
 _PAST_SPEAKING_CHAT_QUESTION = (
-    "Please share any past speaking engagements in your own words—where you spoke, what it was about, "
-    "who the audience was, and roughly when. You can use paragraphs or short bullets per event; no form or labeled fields are required."
+   "Do you have past speaking examples you'd like to share? Please include the organization or event name and the corresponding date (month/year)."
 )
 
 _SOCIAL_URL_FIELD_RULES = (
@@ -116,6 +113,10 @@ _FIXED_LIST_PARTIAL_OR_MIXED_FLOW = (
     "FORBIDDEN after partial/mixed delivery_mode until continue: target_audiences question or bullets. "
     "FORBIDDEN after partial/mixed target_audiences until continue: talk_description or any optional question. "
     "If EVERYTHING the user named for that step matches the catalog, do NOT use this pause: use CONVERSATIONAL WRAPPER and move to the next field (with bullets)—no redundant 'continue?' prompt. "
+    "SINGLE OR MULTIPLE PURE CATALOG REPLIES: If the user's message maps entirely to allowed options and contains NO extra unrelated phrase "
+    "(e.g. they only say 'Startups', or 'Startups and Entrepreneurs', or pick one bullet verbatim), that is a FULL MATCH—NOT partial/mixed. "
+    "FORBIDDEN in that case: saying 'the other options you mentioned aren't on the list', 'unmatched wording', or asking 'would you like to continue with the next question?' before showing the next field. "
+    "RIGHT: brief ack + immediately ask the next onboarding question (with that step's bullet list if it is a catalog step). "
     "If NOTHING matches for that step, use ONLY the OFF-LIST flow, not this partial pattern."
 )
 
@@ -126,7 +127,24 @@ _FIXED_LIST_USER_FACING_TRUTH = (
     "NEVER claim you saved, recorded, added, or stored a value for one of these fields using the user's free text (e.g. quoting 'train') "
     "unless that exact string is an allowed catalog name you included in the tool arguments for that field. "
     "If you omitted the field or passed an empty list because nothing matched, say only that their choice isn't on the list and they can update from their profile—do not describe their invalid wording as saved. "
-    "For partial/mixed answers, only name persisted catalog matches; for the rest, say not on the list / add from profile—never both 'saved as X' and 'not on the list' for the same X."
+    "For partial/mixed answers, only name persisted catalog matches; for the rest, say not on the list / add from profile—never both 'saved as X' and 'not on the list' for the same X. "
+    "Never claim the user mentioned 'other options' that are not on the list unless their message clearly included at least one distinct phrase that is not an allowed catalog name for that step."
+)
+
+# LLMs often reuse catalog/off-list wording for optional free-text steps—explicitly forbid that.
+_FREE_TEXT_NON_CATALOG_RULES = (
+    "FREE-TEXT FIELDS — NOT A CATALOG (no pick-list, no 'allowed options'): "
+    "talk_description, key_takeaways, professional social URLs (linkedin_url step), past_speaking_examples, video_links, testimonial. "
+    "FORBIDDEN for these fields: saying the user's words \"aren't on the list\", \"not on the list\", \"off the list\", "
+    "\"pick from the list\", \"allowed options\", or any phrasing that implies a predefined menu of choices. "
+    "FORBIDDEN: using the OFF-LIST or PARTIAL/MIXED catalog pause for these fields "
+    "(i.e. 'you can add or update from your speaker profile' plus 'Would you like to continue with the next question?') "
+    "when the user gave nonsense, jokes, or clearly unrelated text—that pause pattern applies ONLY to "
+    "topics, speaking_formats, delivery_mode, target_audiences. "
+    "For key_takeaways: if the reply is not genuine takeaway content (e.g. random word 'peanuts', gibberish, unrelated one-liner), "
+    "do NOT call upsert_speaker_profile with key_takeaways; do not save it; give one short friendly reply that it doesn't sound like "
+    "real takeaways from their talks and re-ask the same key_takeaways question (or offer to skip)—no 'list' language, no continue pause. "
+    "Same idea for talk_description and testimonial when the answer is clearly not on-topic for that question."
 )
 
 # Models often compress catalog questions into "A, B, or C?" after seeing compact examples—reinforce bullets.
@@ -271,7 +289,7 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
         desc
         + " "
         + _SOCIAL_URL_FIELD_RULES
-        + " For past_speaking_examples, extract structured objects from the user's natural language; never ask them to fill a labeled form."
+        + " For past_speaking_examples, extract objects with organization_name, optional event_name, and date_month_year only; never ask them to fill a labeled form."
         + " For topics, speaking_formats, delivery_mode, target_audiences: never tell the user you saved a value unless it is an exact catalog match you passed in this call."
     )
     return {
@@ -318,7 +336,20 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                             "Partial match → save only matches; PARTIAL/MIXED flow before target_audiences question."
                         ),
                     },
-                    "talk_description": {"type": "string"},
+                    "talk_description": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "overview": {"type": "string"},
+                                },
+                                "description": "Preferred: short title plus overview after user describes their talk.",
+                            },
+                        ],
+                        "description": "After user describes their talk, save as object with title and overview when possible.",
+                    },
                     "target_audiences": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -334,15 +365,17 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "type": "array",
                         "items": _PAST_SPEAKING_ITEM_SCHEMA,
                         "description": (
-                            "INTERNAL only: after the user writes free-form past engagements, extract one object per engagement "
-                            "(organization_name, event_name, relevant_topics, audience, date_month_year). "
-                            "Do not read these keys aloud to the user."
+                            "INTERNAL only: after free-form past engagements, extract one object per engagement: "
+                            "organization_name, optional event_name, date_month_year. Do not read keys aloud."
                         ),
                     },
                     "video_links": {"type": "array", "items": {"type": "string"}},
                     "key_takeaways": {
-                        "type": "string",
-                        "description": "Main points or learnings audiences get from their talks; save when user answers the key-takeaways question.",
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Distinct key takeaways as an array of strings (or one string); save after user answers the key-takeaways question.",
                     },
                     "name_salutation": {"type": "string"},
                     "bio": {"type": "string"},
@@ -356,7 +389,13 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                     "phone_number": {"type": "string"},
                     "professional_memberships": {"type": "array", "items": {"type": "string"}},
                     "preferred_speaking_time": {"type": "string"},
-                    "testimonial": {"type": "string"},
+                    "testimonial": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "One or more testimonials as strings (quotes/feedback from past speaking).",
+                    },
                 },
             },
         },
@@ -381,29 +420,25 @@ def _filter_enum_values(values: List[str], allowed: List[str]) -> List[str]:
 
 
 def _normalize_past_speaking_examples(raw: Any) -> List[dict]:
-    """Coerce tool output to list of structured past speaking dicts."""
+    """Coerce tool output to past-speaking dicts: organization_name, event_name, date_month_year only."""
     out: List[dict] = []
     if not isinstance(raw, list):
         return out
     for x in raw:
         if isinstance(x, dict):
-            row = {
-                "organization_name": str(x.get("organization_name") or "").strip(),
-                "event_name": str(x.get("event_name") or "").strip(),
-                "relevant_topics": str(x.get("relevant_topics") or "").strip(),
-                "audience": str(x.get("audience") or "").strip(),
-                "date_month_year": str(x.get("date_month_year") or x.get("date") or "").strip(),
-            }
+            org = str(x.get("organization_name") or "").strip()
+            ev = str(x.get("event_name") or "").strip()
+            dt = str(x.get("date_month_year") or x.get("date") or "").strip()
+            if not org and not ev and not dt:
+                rt = str(x.get("relevant_topics") or "").strip()
+                aud = str(x.get("audience") or "").strip()
+                if rt or aud:
+                    org = (rt or aud).strip()
+            row = {"organization_name": org, "event_name": ev, "date_month_year": dt}
             if any(row.values()):
                 out.append(row)
         elif isinstance(x, str) and x.strip():
-            out.append({
-                "organization_name": "",
-                "event_name": "",
-                "relevant_topics": x.strip(),
-                "audience": "",
-                "date_month_year": "",
-            })
+            out.append({"organization_name": x.strip(), "event_name": "", "date_month_year": ""})
     return out
 
 
@@ -512,9 +547,16 @@ class SpeakerProfileChatbotService:
         )
         if delivery_mode:
             doc["delivery_mode"] = delivery_mode
-        talk_desc = (tool_args.get("talk_description") or "").strip()
-        if talk_desc:
-            doc["talk_description"] = talk_desc
+        td_raw = tool_args.get("talk_description")
+        if td_raw is not None:
+            if isinstance(td_raw, dict):
+                t_title = str(td_raw.get("title") or "").strip()
+                t_over = str(td_raw.get("overview") or "").strip()
+                if t_title or t_over:
+                    doc["talk_description"] = {"title": t_title, "overview": t_over or t_title}
+            elif isinstance(td_raw, str) and td_raw.strip():
+                s = td_raw.strip()
+                doc["talk_description"] = {"title": s[:200], "overview": s[:2000]}
         audiences_raw = tool_args.get("target_audiences")
         if audiences_raw and isinstance(audiences_raw, list):
             resolved = await self._resolve_target_audiences([str(a).strip() for a in audiences_raw if a])
@@ -529,10 +571,23 @@ class SpeakerProfileChatbotService:
         video = tool_args.get("video_links")
         if isinstance(video, list):
             doc["video_links"] = [str(x).strip() for x in video if x]
-        kt = (tool_args.get("key_takeaways") or "").strip()
-        if kt:
-            doc["key_takeaways"] = kt
-        for k in ["name_salutation", "bio", "twitter", "facebook", "instagram", "address_city", "address_state", "address_country", "phone_country_code", "phone_number", "preferred_speaking_time", "testimonial"]:
+        kt_raw = tool_args.get("key_takeaways")
+        if kt_raw is not None:
+            if isinstance(kt_raw, list):
+                kt_list = [str(x).strip() for x in kt_raw if str(x).strip()]
+                if kt_list:
+                    doc["key_takeaways"] = kt_list
+            elif isinstance(kt_raw, str) and kt_raw.strip():
+                doc["key_takeaways"] = [kt_raw.strip()]
+        tm_raw = tool_args.get("testimonial")
+        if tm_raw is not None:
+            if isinstance(tm_raw, list):
+                tm_list = [str(x).strip() for x in tm_raw if str(x).strip()]
+                if tm_list:
+                    doc["testimonial"] = tm_list
+            elif isinstance(tm_raw, str) and tm_raw.strip():
+                doc["testimonial"] = [tm_raw.strip()]
+        for k in ["name_salutation", "bio", "twitter", "facebook", "instagram", "address_city", "address_state", "address_country", "phone_country_code", "phone_number", "preferred_speaking_time"]:
             v = tool_args.get(k)
             if v is not None and isinstance(v, str):
                 doc[k] = v.strip() or None
@@ -704,6 +759,8 @@ class SpeakerProfileChatbotService:
                 + " "
                 + _FIXED_LIST_USER_FACING_TRUTH
                 + " "
+                + _FREE_TEXT_NON_CATALOG_RULES
+                + " "
 
                 "EXISTING PROFILE CONTEXT: "
                 "A speaker profile already exists. Current profile data: "
@@ -719,7 +776,8 @@ class SpeakerProfileChatbotService:
                 "Ask for only ONE new profile field per turn (one main question), optionally preceded by one short ack sentence per CONVERSATIONAL WRAPPER—do not bundle two different fields in one turn. "
                 "Required fields cannot be skipped EXCEPT for catalog fields (topics, speaking_formats, delivery_mode, target_audiences): "
                 "if the user's answer matches no catalog option or they refuse the list, that counts as having addressed that step—use the OFF-LIST flow (profile sentence + ask if they want to continue); only after they agree, ask the next field in order; never re-ask that same catalog question in the off-list acknowledgment turn. "
-                "If their answer is PARTIAL/MIXED (some catalog matches plus at least one clear non-catalog item for the same step), save only matches, use the PARTIAL/MIXED flow (confirm + profile note for unmatched + ask to continue)—same pause as off-list; only after they agree, ask the next field. "
+                "If their answer is PARTIAL/MIXED (some catalog matches plus at least one clear non-catalog item in the SAME user message for that step), save only matches, use the PARTIAL/MIXED flow (confirm + profile note for unmatched + ask to continue)—same pause as off-list; only after they agree, ask the next field. "
+                "If their message is ONLY valid catalog name(s) with nothing else unmatched (e.g. only 'Startups'), that is NOT partial/mixed—acknowledge and ask the next field in the same turn; do not ask 'continue?' or say others aren't on the list. "
                 "If the user evades with an empty or unrelated non-answer, politely ask again. "
                 "If user provides multiple fields at once, extract and save all. "
                 "Adapt questions naturally using chat history and profile_json. "
@@ -751,7 +809,10 @@ class SpeakerProfileChatbotService:
                 "or pasting all four categories (topics+formats+delivery+audiences) in one message when only one step is active; or asking them to pick from the list a second time for the step you just closed. "
                 "Allowed and required: when actively asking a catalog step (not an off-list or partial/mixed pause turn), show that step's options as bullet points (see CATALOG CHOICE QUESTIONS). "
                 "Optional: you may offer at most one closest catalog name in a short phrase—without reprinting all options. "
-                "Call upsert_speaker_profile only with valid list values you could match; if none, omit that field (OFF-LIST flow); if some match, pass only those (PARTIAL/MIXED flow when anything they named did not match); in both cases wait for continue before the next field's question. "
+                "For topics, speaking_formats, delivery_mode, target_audiences ONLY: call upsert_speaker_profile only with valid catalog matches; "
+                "if none match, omit that field (OFF-LIST flow); if some match and some do not, pass only matches (PARTIAL/MIXED flow); "
+                "in those cases wait for continue before the next field's question. "
+                "Do NOT apply this sentence to key_takeaways or other free-text fields—see FREE-TEXT rules above. "
                 + _FIXED_LIST_USER_DEFERS
                 + " "
                 + _FIXED_LIST_ADVANCE_AFTER_OFF_LIST
@@ -762,9 +823,10 @@ class SpeakerProfileChatbotService:
                 "IMMEDIATELY continue by asking the first optional question. "
                 "Ask EACH optional field ONE at a time in this exact order: "
                 "talk_description, key_takeaways, linkedin_url, past_speaking_examples, video_links, testimonial (last optional—testimonials from past speaking). "
-                "For talk_description, ask for their talk or expertise (title and overview). "
+                "For talk_description, ask for their talk or expertise in their own words; after they answer, call upsert_speaker_profile with talk_description as an object {{\"title\": \"...\", \"overview\": \"...\"}} (derive title and overview from their text). "
                 "For key_takeaways, ask using EXACTLY: \"What key takeaways would you like to highlight from your talks?\" "
-                "Save the reply via upsert_speaker_profile as key_takeaways. "
+                "Save as key_takeaways: an array of strings (one string per takeaway), or a single string only if they gave one line. "
+                "There is NO list of allowed takeaways—never tell the user their answer is 'not on the list'. "
                 "For the social media step (after key_takeaways), ask using this wording: "
                 "Share your primary, professional social media channel URLs (e.g., LinkedIn, Facebook, X, Instagram, etc.). "
                 + _SOCIAL_URL_FIELD_RULES
@@ -774,8 +836,8 @@ class SpeakerProfileChatbotService:
                 + " "
                 "FORBIDDEN for past_speaking: asking users to structure answers with per-field labels or 'each engagement must include'. "
                 "After they reply in natural language, call upsert_speaker_profile with past_speaking_examples as an array of objects "
-                "(organization_name, event_name, relevant_topics, audience, date_month_year)—extract best effort; do not echo those key names to the user. "
-                "Then ask for video_links (YouTube/Vimeo-style URLs or skip). Last optional: testimonial—invite quotes or feedback from past speaking. "
+                "(organization_name, optional event_name, date_month_year)—extract best effort; do not echo those key names to the user. "
+                "Then ask for video_links (YouTube video link or skip). Last optional: testimonial—invite quotes or feedback; save testimonial as an array of strings (one per quote). "
 
                 "STRICTLY FORBIDDEN: "
                 "Do NOT say any sentence that mentions required fields, optional fields, completion, or transition. "
@@ -864,6 +926,8 @@ class SpeakerProfileChatbotService:
 
                 {_FIXED_LIST_USER_FACING_TRUTH}
 
+                {_FREE_TEXT_NON_CATALOG_RULES}
+
                 Email Rules
 
                 • Email must be collected first.
@@ -883,6 +947,7 @@ class SpeakerProfileChatbotService:
                 Store in upsert_speaker_profile only exact matches from the allowed lists below (system catalog only, type=system).
                 If the user names something not on the list, omit that field in upsert and use the OFF-LIST flow before the next field—never re-ask topics in the same message as the off-list profile sentence.
                 If they name a mix (some on-list, some not), save only matches and use the PARTIAL/MIXED flow—never ask the next catalog step in that same message.
+                If they name only on-list option(s) and nothing else (e.g. only "Startups"), that is a full match—do NOT use PARTIAL/MIXED, do NOT say other choices "aren't on the list", and do NOT pause on "continue?"—acknowledge and ask the next field.
 
                 Topics (User may choose multiple)
 
@@ -924,7 +989,7 @@ class SpeakerProfileChatbotService:
 
                 Key takeaways (optional, immediately after talk description)
 
-                Ask using EXACTLY: "What key takeaways would you like to highlight from your talks?" Save via upsert_speaker_profile as key_takeaways.
+                Ask using EXACTLY: "What key takeaways would you like to highlight from your talks?" Save via upsert_speaker_profile as key_takeaways (array of strings, one per takeaway). There is no catalog list for takeaways—if the answer is nonsense or unrelated, re-ask politely without saying "not on the list" or using the catalog continue pause.
 
                 Social media URLs (optional, after key takeaways)
 
@@ -937,15 +1002,15 @@ class SpeakerProfileChatbotService:
 
                 FORBIDDEN: do not ask for labeled fields (Organization name, Event name, etc.) or a rigid template.
 
-                After natural-language replies, extract engagements and call upsert_speaker_profile with past_speaking_examples (array of objects). Do not read schema key names aloud to the user.
+                After natural-language replies, extract engagements (organization_name, optional event_name, date_month_year per event) and call upsert_speaker_profile with past_speaking_examples. Do not read schema key names aloud to the user.
 
                 Video links (optional, after past speaking)
 
-                Ask for links to speaking videos (e.g. YouTube or Vimeo) or accept skip.
+                Ask for You Tube links to speaking videos or accept skip.
 
                 Testimonial (optional, LAST optional question before completion)
 
-                Ask whether they have any testimonials from past speaking they would like to share; invite them to paste quotes or feedback.
+                Ask whether they have any testimonials from past speaking they would like to share; invite them to paste quotes or feedback. Save testimonial as an array of strings (one string per testimonial).
 
                 Optional fields flow
 

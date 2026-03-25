@@ -563,6 +563,7 @@ async def verify_step(
         "video_links",
         "testimonial",
         "key_takeaways",
+        "talk_description",
     ):
         user_answer_str = (
             body.answer if isinstance(body.answer, str) else " ".join(str(x).strip() for x in body.answer if x)

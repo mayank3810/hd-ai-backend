@@ -232,8 +232,8 @@ def _fallback_recovery(
             ]
     elif reason_code == "GIBBERISH" and step.step_name == "video_links":
         variants = [
-            "That doesn't look like a video link. Paste a YouTube or Vimeo URL, or you can skip this step.",
-            "We need a speaking video link (YouTube or Vimeo) or you can skip. Your choice!",
+            "That doesn't look like a video link. Paste a YouTube URL, or you can skip this step.",
+            "We need a speaking video link (YouTube) or you can skip. Your choice!",
         ]
     elif reason_code in ("GIBBERISH", "UNRELATED") and step.step_name in ("talk_description", "key_takeaways", "testimonial"):
         if step.step_name == "talk_description":
@@ -243,13 +243,13 @@ def _fallback_recovery(
             ]
         elif step.step_name == "key_takeaways":
             variants = [
-                "Key takeaways help organizers understand your impact. Could you share a few main points audiences get from your talks?",
-                "A short list or paragraph of takeaways really helps—share when you're ready!",
+                "That doesn't look like key takeaways from your talks yet. Could you share specific points or lessons audiences gain?",
+                "Think bullet-style outcomes from your sessions—happy to capture them when you share!",
             ]
         else:
             variants = [
-                "Testimonials help organizers see your impact. Could you share a quote or feedback from a past talk?",
-                "If you paste a testimonial or two, it really strengthens your profile—share when you're ready!",
+                "That doesn't read like a testimonial (quote or feedback about your speaking). Could you paste a real testimonial if you have one?",
+                "Organizers love short quotes or feedback from past events—share a genuine testimonial when you can!",
             ]
     else:
         # IRRELEVANT / GIBBERISH / SPAM / LOW_EFFORT / UNKNOWN

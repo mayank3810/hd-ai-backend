@@ -282,7 +282,7 @@ def _validate_rule_based(
                 # video_links: YouTube or Vimeo URLs only; keep valid ones, INVALID only if none valid
                 valid = [u for u in normalized_answer if _is_valid_video_url(u)]
                 if not valid:
-                    return None, "Please enter at least one valid YouTube or Vimeo video URL (e.g. https://www.youtube.com/watch?v=... or https://vimeo.com/...)."
+                    return None, "Please enter at least one valid YouTube or Vimeo video URL (e.g. https://www.youtube.com/watch?v=...)."
                 return list(dict.fromkeys(valid)), None
             invalid_urls = [u for u in normalized_answer if not _is_valid_url(u)]
             if invalid_urls:
@@ -689,23 +689,215 @@ Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "
         return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
 
 
+def _validation_ai_talk_description_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect skip/defer for optional talk description."""
+    prompt = f"""
+The user was asked to describe their talk or expertise. They replied: "{user_text}"
+
+Decide if they are skipping or deferring (e.g. "skip", "none", "prefer not", "later", "I'll add later") or if they are trying to describe a talk.
+- If they clearly skip or defer, return status "VALID" with "refusal": true.
+- If they are describing (or attempting to describe) a talk or expertise, return status "INVALID" with reason_code "EMPTY".
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "EMPTY", "refusal": true only when status is VALID and they skipped }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. Skip/defer → {\"status\":\"VALID\",\"reason_code\":\"REFUSAL\",\"refusal\":true}. Otherwise → {\"status\":\"INVALID\",\"reason_code\":\"EMPTY\"}."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+        if obj.get("status") == "VALID" and obj.get("refusal") is True:
+            return {"status": "VALID", "reason_code": "REFUSAL", "refusal": True}
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+
+
+def _validation_ai_talk_description_title_overview(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """
+    Decide if input is a real talk/expertise description vs random/off-topic; if valid, return title + overview for storage.
+    normalized_value on VALID: {"title": str, "overview": str}
+    """
+    prompt = f"""
+The user was asked to describe their talk or speaking expertise. They replied:
+
+\"\"\"{user_text}\"\"\"
+
+1) Is this a genuine description of a talk, workshop, keynote, session, or professional speaking expertise that an event organizer could use? Or is it random text, spam, jokes unrelated to speaking, off-topic rants, or keyboard gibberish?
+
+2) If it is NOT a valid talk description, return JSON: {{"status":"INVALID","reason_code":"GIBBERISH"}} for nonsense/random characters, or {{"status":"INVALID","reason_code":"UNRELATED"}} for coherent but wrong-topic content.
+
+3) If it IS valid, return JSON: {{"status":"VALID","reason_code":"OK","title":"<short title, max ~15 words>","overview":"<1-4 sentences capturing substance; use their content, do not invent credentials or claims not implied>"}}
+
+Return JSON ONLY, no markdown.
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. For VALID, both title and overview must be non-empty strings."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=20,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+        if obj.get("status") == "INVALID":
+            rc = obj.get("reason_code") or "UNRELATED"
+            if rc not in ("GIBBERISH", "UNRELATED"):
+                rc = "UNRELATED"
+            return {"status": "INVALID", "reason_code": rc, "normalized_value": None}
+        title = str(obj.get("title") or "").strip()
+        overview = str(obj.get("overview") or "").strip()
+        if not title or not overview:
+            return {"status": "INVALID", "reason_code": "UNRELATED", "normalized_value": None}
+        return {"status": "VALID", "reason_code": "OK", "normalized_value": {"title": title, "overview": overview}}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+
+
+def _validation_ai_key_takeaways_refusal(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Detect skip for optional key takeaways."""
+    prompt = f"""
+The user was asked what key takeaways they highlight from their talks. They replied: "{user_text}"
+
+Decide if they are skipping (e.g. "skip", "none", "prefer not", "later", "no takeaways") or providing content about takeaways.
+- If they clearly skip, return status "VALID" with "refusal": true.
+- If they are providing takeaway-related content, return status "INVALID" with reason_code "EMPTY".
+
+Return JSON ONLY: {{ "status": "VALID" | "INVALID", "reason_code": "REFUSAL" | "EMPTY", "refusal": true only when VALID and skipped }}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. Skip → {\"status\":\"VALID\",\"reason_code\":\"REFUSAL\",\"refusal\":true}. Else → {\"status\":\"INVALID\",\"reason_code\":\"EMPTY\"}."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=10,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+        if obj.get("status") == "VALID" and obj.get("refusal") is True:
+            return {"status": "VALID", "reason_code": "REFUSAL", "refusal": True}
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "EMPTY", "refusal": False}
+
+
+def _validate_and_extract_testimonials(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Return VALID with normalized_value list of testimonial strings, or INVALID if not real testimonials."""
+    prompt = f"""
+The user was asked to share testimonials (quotes or feedback) from past speaking engagements. They replied:
+
+\"\"\"{user_text}\"\"\"
+
+1) Is this genuine testimonial-style content—praise, quotes, or feedback about the speaker's speaking—or is it random text, unrelated answers, jokes, or not testimonials?
+
+2) If NOT genuine testimonials, return {{"status":"INVALID","reason_code":"UNRELATED"}} (or "GIBBERISH" for nonsense).
+
+3) If genuine, split into separate strings: each item is one distinct testimonial or quote (merge broken lines of the same quote into one string). At least one non-empty item.
+
+Return JSON ONLY: {{"status":"VALID","reason_code":"OK","items":["..."]}} or INVALID as above.
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. items must be a non-empty array of strings when status is VALID."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=20,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+        if obj.get("status") == "INVALID":
+            rc = obj.get("reason_code") or "UNRELATED"
+            if rc not in ("GIBBERISH", "UNRELATED"):
+                rc = "UNRELATED"
+            return {"status": "INVALID", "reason_code": rc, "normalized_value": None}
+        raw_items = obj.get("items")
+        if not isinstance(raw_items, list):
+            return {"status": "INVALID", "reason_code": "UNRELATED", "normalized_value": None}
+        cleaned = [str(x).strip() for x in raw_items if str(x).strip()]
+        if not cleaned:
+            return {"status": "INVALID", "reason_code": "UNRELATED", "normalized_value": None}
+        return {"status": "VALID", "reason_code": "OK", "normalized_value": cleaned}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+
+
+def _validate_and_extract_key_takeaways(client: OpenAI, user_text: str) -> Dict[str, Any]:
+    """Return VALID with list of takeaway strings, or INVALID if not real key takeaways."""
+    prompt = f"""
+The user was asked what key takeaways audiences get from their talks. They replied:
+
+\"\"\"{user_text}\"\"\"
+
+1) Is this genuine key-takeaway content—concrete points, lessons, or outcomes audiences gain—or random text, unrelated content, or not about talk takeaways?
+
+2) If NOT genuine key takeaways, return {{"status":"INVALID","reason_code":"UNRELATED"}} or {{"status":"INVALID","reason_code":"GIBBERISH"}}.
+
+3) If genuine, return one string per distinct takeaway in "items" (short phrases or single sentences each).
+
+Return JSON ONLY: {{"status":"VALID","reason_code":"OK","items":["..."]}} or INVALID as above.
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON. items must be non-empty when VALID."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            timeout=20,
+        )
+        obj = _parse_validation_ai_json(completion.choices[0].message.content or "")
+        if not obj:
+            return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+        if obj.get("status") == "INVALID":
+            rc = obj.get("reason_code") or "UNRELATED"
+            if rc not in ("GIBBERISH", "UNRELATED"):
+                rc = "UNRELATED"
+            return {"status": "INVALID", "reason_code": rc, "normalized_value": None}
+        raw_items = obj.get("items")
+        if not isinstance(raw_items, list):
+            return {"status": "INVALID", "reason_code": "UNRELATED", "normalized_value": None}
+        cleaned = [str(x).strip() for x in raw_items if str(x).strip()]
+        if not cleaned:
+            return {"status": "INVALID", "reason_code": "UNRELATED", "normalized_value": None}
+        return {"status": "VALID", "reason_code": "OK", "normalized_value": cleaned}
+    except Exception:
+        return {"status": "INVALID", "reason_code": "AI_UNAVAILABLE", "normalized_value": None}
+
+
 def _extract_past_speaking_structured(client: OpenAI, user_text: str) -> List[Dict[str, Any]]:
-    """Parse free text into list of dicts for past_speaking_examples."""
-    schema_hint = (
-        '{"entries": [{"organization_name": "", "event_name": "", "relevant_topics": "", '
-        '"audience": "", "date_month_year": ""}]}'
-    )
-    prompt = f"""Extract past speaking engagements from the user's text. Each entry should include when possible:
-- organization_name: hosting organization or company
-- event_name: conference, meetup, or session name
-- relevant_topics: topics or themes (short phrase)
-- audience: who attended (e.g. executives, developers)
-- date_month_year: e.g. "March 2024" or "2023" if only year is known
+    """Parse free text into list of dicts for past_speaking_examples (organization, optional event, date only)."""
+    schema_hint = '{"entries": [{"organization_name": "", "event_name": "", "date_month_year": ""}]}'
+    prompt = f"""Extract past speaking engagements from the user's text. For each engagement capture ONLY:
+- organization_name: hosting organization, company, or venue name (required when inferable)
+- event_name: conference or event name if they gave one (optional; empty string if unknown)
+- date_month_year: when it happened, e.g. "March 2024", "Q1 2023", or "2022" if only year known
+
+Do NOT ask for topics or audience in output—omit those concepts.
 
 User text:
 \"\"\"{user_text}\"\"\"
 
-Return JSON ONLY with shape {schema_hint}. Use one object if only one engagement; use multiple if clearly several. Use empty string for unknown fields. If nothing extractable, return {{"entries": []}}."""
+Return JSON ONLY with shape {schema_hint}. One object per distinct engagement. Use empty string for unknown optional fields. If nothing extractable, return {{"entries": []}}."""
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -723,14 +915,13 @@ Return JSON ONLY with shape {schema_hint}. Use one object if only one engagement
         for e in obj["entries"]:
             if not isinstance(e, dict):
                 continue
-            out.append({
-                "organization_name": str(e.get("organization_name") or "").strip(),
-                "event_name": str(e.get("event_name") or "").strip(),
-                "relevant_topics": str(e.get("relevant_topics") or "").strip(),
-                "audience": str(e.get("audience") or "").strip(),
-                "date_month_year": str(e.get("date_month_year") or e.get("date") or "").strip(),
-            })
-        return [x for x in out if any(x.values())]
+            org = str(e.get("organization_name") or "").strip()
+            ev = str(e.get("event_name") or "").strip()
+            dt = str(e.get("date_month_year") or e.get("date") or "").strip()
+            row = {"organization_name": org, "event_name": ev, "date_month_year": dt}
+            if org or ev or dt:
+                out.append(row)
+        return out
     except Exception:
         return []
 
@@ -1102,7 +1293,7 @@ def validate_step(
         if not text:
             return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
         # If it looks like URL(s), let _validate_rule_based validate; otherwise check refusal
-        if "http" in text.lower() or "youtube" in text.lower() or "youtu.be" in text.lower() or "vimeo" in text.lower():
+        if "http" in text.lower() or "youtube" in text.lower() or "youtu.be" in text.lower():
             pass  # fall through to _validate_rule_based
         else:
             # Reject gibberish/random text (same idea as linkedin_url): code check first, then AI
@@ -1174,10 +1365,8 @@ def validate_step(
                 "status": "VALID",
                 "reason_code": "OK",
                 "normalized_value": [{
-                    "organization_name": "",
+                    "organization_name": text.strip(),
                     "event_name": "",
-                    "relevant_topics": text.strip(),
-                    "audience": "",
                     "date_month_year": "",
                 }],
             }
@@ -1192,8 +1381,80 @@ def validate_step(
 
     try:
         if step.validation_mode == "semantic_text_ai":
-            text = normalized if isinstance(normalized, str) else " ".join(normalized)
-            # testimonial is optional: empty or refusal -> skip (VALID None); handle before generic optional check
+            text = normalized if isinstance(normalized, str) else " ".join(str(x) for x in normalized if x)
+
+            # talk_description: optional skip; LLM checks real description vs random; saves {title, overview}
+            if step.step_name == "talk_description":
+                if not text.strip():
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                td_refusal_phrases = [
+                    "don't want to share", "prefer not", "skip", "none", "later", "not now",
+                    "i'll add", "ill add", "add later", "pass", "no thanks", "rather not",
+                ]
+                if any(p in text.lower() for p in td_refusal_phrases):
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                if client:
+                    ref_td = _validation_ai_talk_description_refusal(client, text)
+                    if ref_td.get("refusal") is True:
+                        return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                if _check_gibberish(text):
+                    return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
+                if not client:
+                    words = text.strip().split()
+                    short_title = " ".join(words[:12]) if words else text.strip()
+                    return {
+                        "status": "VALID",
+                        "reason_code": "OK",
+                        "normalized_value": {"title": short_title[:200], "overview": text.strip()[:2000]},
+                    }
+                td_res = _validation_ai_talk_description_title_overview(client, text)
+                if td_res.get("status") == "VALID" and isinstance(td_res.get("normalized_value"), dict):
+                    return {
+                        "status": "VALID",
+                        "reason_code": "OK",
+                        "normalized_value": td_res["normalized_value"],
+                    }
+                return {
+                    "status": "INVALID",
+                    "reason_code": td_res.get("reason_code") or "UNRELATED",
+                    "normalized_value": None,
+                }
+
+            # key_takeaways: optional skip; LLM validates and returns list of strings
+            if step.step_name == "key_takeaways":
+                if not text.strip():
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                kt_refusal_phrases = [
+                    "don't have", "don't have any", "do not have", "prefer not", "skip", "none",
+                    "don't want to share", "rather not", "nothing to share", "not yet", "later", "pass",
+                    "no takeaways", "no key takeaways",
+                ]
+                if any(p in text.lower() for p in kt_refusal_phrases):
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                if client:
+                    ref_kt = _validation_ai_key_takeaways_refusal(client, text)
+                    if ref_kt.get("refusal") is True:
+                        return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
+                if _check_gibberish(text):
+                    return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
+                if not client:
+                    parts = [p.strip() for p in re.split(r"[\n•;]+|\s*[,;]\s*", text) if p.strip()]
+                    items = parts if len(parts) > 1 else [text.strip()]
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": items}
+                kt_res = _validate_and_extract_key_takeaways(client, text)
+                if kt_res.get("status") == "VALID" and isinstance(kt_res.get("normalized_value"), list):
+                    return {
+                        "status": "VALID",
+                        "reason_code": "OK",
+                        "normalized_value": kt_res["normalized_value"],
+                    }
+                return {
+                    "status": "INVALID",
+                    "reason_code": kt_res.get("reason_code") or "UNRELATED",
+                    "normalized_value": None,
+                }
+
+            # testimonial: optional skip; LLM validates real testimonials and returns list of strings
             if step.step_name == "testimonial":
                 if not text.strip():
                     return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
@@ -1209,7 +1470,24 @@ def validate_step(
                     ai_res = _validation_ai_testimonial_refusal(client, text)
                     if ai_res.get("refusal") is True:
                         return {"status": "VALID", "reason_code": "OK", "normalized_value": None}
-            # Optional field: empty is valid (for other optional semantic steps)
+                if _check_gibberish(text):
+                    return {"status": "INVALID", "reason_code": "GIBBERISH", "normalized_value": None}
+                if not client:
+                    return {"status": "VALID", "reason_code": "OK", "normalized_value": [text.strip()]}
+                tm_res = _validate_and_extract_testimonials(client, text)
+                if tm_res.get("status") == "VALID" and isinstance(tm_res.get("normalized_value"), list):
+                    return {
+                        "status": "VALID",
+                        "reason_code": "OK",
+                        "normalized_value": tm_res["normalized_value"],
+                    }
+                return {
+                    "status": "INVALID",
+                    "reason_code": tm_res.get("reason_code") or "UNRELATED",
+                    "normalized_value": None,
+                }
+
+            # Any other semantic_text_ai step (future): optional empty + intent
             if not step.required and not text.strip():
                 out = [] if step.validation_type in ("array_of_strings", "array_of_urls") else ""
                 return {"status": "VALID", "reason_code": "OK", "normalized_value": out}
@@ -1283,6 +1561,10 @@ def validate_full_profile(
             continue
         value_key, default_source = field_mapping[field_name]
         value = profile_data.get(value_key)
+        if field_name == "talk_description" and isinstance(value, dict):
+            value = f"{value.get('title', '')} {value.get('overview', '')}".strip()
+        if field_name in ("key_takeaways", "testimonial") and isinstance(value, list):
+            value = "\n".join(str(x).strip() for x in value if str(x).strip())
         if field_name == "linkedin_url":
             bits = []
             for k in ("linkedin_url", "facebook", "twitter", "instagram"):
@@ -1300,7 +1582,7 @@ def validate_full_profile(
                     parts.append(
                         " ".join(
                             str(v.get(k) or "").strip()
-                            for k in ("organization_name", "event_name", "relevant_topics", "audience", "date_month_year")
+                            for k in ("organization_name", "event_name", "date_month_year")
                         ).strip()
                     )
                 else:

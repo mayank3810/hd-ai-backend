@@ -32,9 +32,18 @@ def _summary_profile(profile: dict) -> str:
     audiences = OpportunityTextBuilder._to_str(profile.get("target_audiences") or [])
     if audiences:
         parts.append(f"Target audiences: {audiences}")
-    talk = (profile.get("talk_description") or "").strip()
-    if isinstance(profile.get("talk_description"), str) and talk:
+    td = profile.get("talk_description")
+    if isinstance(td, dict):
+        talk = f"{td.get('title', '')} {td.get('overview', '')}".strip()
+    else:
+        talk = (td or "").strip() if isinstance(td, str) else str(td or "").strip()
+    if talk:
         parts.append(f"Talk description: {talk[:500]}")
+    kt = profile.get("key_takeaways")
+    if isinstance(kt, list) and kt:
+        parts.append(f"Key takeaways: {', '.join(str(x) for x in kt if x)[:400]}")
+    elif isinstance(kt, str) and kt.strip():
+        parts.append(f"Key takeaways: {kt.strip()[:400]}")
     return "\n".join(parts) if parts else ""
 
 

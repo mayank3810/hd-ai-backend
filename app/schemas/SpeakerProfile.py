@@ -1,18 +1,26 @@
 """
 Pydantic schemas for Speaker Profile onboarding: init, verify-step, and final save.
 """
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from typing import Any, List, Literal, Optional, Union
+
+
+# --- Talk description (structured; stored as profile.talk_description) ---
+
+class TalkDescriptionObject(BaseModel):
+    """LLM-derived title and overview from the talk-description step."""
+    title: str = ""
+    overview: str = ""
 
 
 # --- Past speaking example (structured; stored in profile.past_speaking_examples) ---
 
 class PastSpeakingExampleItem(BaseModel):
-    """One past engagement: organization, event, topics, audience, and date (month/year)."""
+    """One past engagement: organization, optional event name, and date only (no topics/audience)."""
+    model_config = ConfigDict(extra="ignore")
+
     organization_name: str = ""
     event_name: str = ""
-    relevant_topics: str = ""
-    audience: str = ""
     date_month_year: str = Field(default="", description="e.g. March 2024")
 
     @model_validator(mode="before")
@@ -20,13 +28,44 @@ class PastSpeakingExampleItem(BaseModel):
     def coerce_legacy_string(cls, data: Any):
         if isinstance(data, str):
             return {
-                "organization_name": "",
+                "organization_name": data.strip(),
                 "event_name": "",
-                "relevant_topics": data.strip(),
-                "audience": "",
                 "date_month_year": "",
             }
         return data
+
+
+def _coerce_talk_description_value(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, TalkDescriptionObject):
+        return v
+    if isinstance(v, dict):
+        return TalkDescriptionObject(
+            title=str(v.get("title") or "").strip(),
+            overview=str(v.get("overview") or "").strip(),
+        )
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        first_line = s.split("\n", 1)[0].strip()
+        rest = s[len(first_line) :].lstrip() if "\n" in s else ""
+        overview = rest if rest else s
+        return TalkDescriptionObject(title=first_line[:300], overview=overview[:2000])
+    return v
+
+
+def _coerce_string_list_field(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else None
+    if isinstance(v, list):
+        out = [str(x).strip() for x in v if str(x).strip()]
+        return out or None
+    return v
 
 
 # --- Topic item (from speakerTopics collection; stored in profile.topics) ---
@@ -117,8 +156,8 @@ class SpeakerProfileCreateSchema(BaseModel):
     linkedin_url: str = Field(...)  # validated as URL in service or via HttpUrl
     past_speaking_examples: Optional[List[PastSpeakingExampleItem]] = Field(default=None)
     video_links: List[str] = Field(...)
-    talk_description: str = Field(..., min_length=1)
-    key_takeaways: Optional[str] = Field(default=None, min_length=1)
+    talk_description: Union[str, TalkDescriptionObject] = Field(...)
+    key_takeaways: Optional[Union[str, List[str]]] = Field(default=None)
     target_audiences: List[SpeakerTargetAudienceItem] = Field(..., min_length=1)  # array of audience objects from speakerTargetAudeince
     # Optional fields editable after profile creation (not part of verify-step)
     name_salutation: Optional[str] = Field(default=None, description="E.g. Mr, Dr., Mrs., Ms.")
@@ -133,7 +172,27 @@ class SpeakerProfileCreateSchema(BaseModel):
     phone_number: Optional[str] = Field(default=None, description="Phone number (without country code)")
     professional_memberships: Optional[List[str]] = Field(default=None, description="Professional memberships or affiliations (array of strings)")
     preferred_speaking_time: Optional[str] = Field(default=None, description="E.g. 10-, 20-, 30-, 40-minute or one hour")
-    testimonial: Optional[str] = Field(default=None, description="Speaker testimonial (plain text)")
+    testimonial: Optional[Union[str, List[str]]] = Field(default=None, description="Testimonials as strings or list of quotes")
+
+    @field_validator("talk_description", mode="before")
+    @classmethod
+    def _v_talk_description(cls, v: Any) -> Any:
+        return _coerce_talk_description_value(v)
+
+    @field_validator("key_takeaways", "testimonial", mode="before")
+    @classmethod
+    def _v_str_list_fields(cls, v: Any) -> Any:
+        return _coerce_string_list_field(v)
+
+    @model_validator(mode="after")
+    def _require_talk_description_nonempty(self) -> "SpeakerProfileCreateSchema":
+        td = self.talk_description
+        if isinstance(td, TalkDescriptionObject):
+            if not str(td.title).strip() and not str(td.overview).strip():
+                raise ValueError("talk_description must include a title or overview")
+        elif isinstance(td, str) and not td.strip():
+            raise ValueError("talk_description is required")
+        return self
 
 
 # --- PUT /speaker-profile/{profile_id} request (partial update; all fields optional) ---
@@ -148,8 +207,8 @@ class SpeakerProfileUpdateSchema(BaseModel):
     linkedin_url: Optional[str] = Field(default=None)
     past_speaking_examples: Optional[List[PastSpeakingExampleItem]] = Field(default=None)
     video_links: Optional[List[str]] = Field(default=None)
-    talk_description: Optional[str] = Field(default=None, min_length=1)
-    key_takeaways: Optional[str] = Field(default=None, min_length=1)
+    talk_description: Optional[Union[str, TalkDescriptionObject]] = Field(default=None)
+    key_takeaways: Optional[Union[str, List[str]]] = Field(default=None)
     target_audiences: Optional[List[SpeakerTargetAudienceItem]] = Field(default=None, min_length=1)
     name_salutation: Optional[str] = None
     bio: Optional[str] = None
@@ -163,7 +222,17 @@ class SpeakerProfileUpdateSchema(BaseModel):
     phone_number: Optional[str] = None
     professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
-    testimonial: Optional[str] = None
+    testimonial: Optional[Union[str, List[str]]] = None
+
+    @field_validator("talk_description", mode="before")
+    @classmethod
+    def _v_talk_description_u(cls, v: Any) -> Any:
+        return _coerce_talk_description_value(v)
+
+    @field_validator("key_takeaways", "testimonial", mode="before")
+    @classmethod
+    def _v_str_list_fields_u(cls, v: Any) -> Any:
+        return _coerce_string_list_field(v)
 
     class Config:
         populate_by_name = True
@@ -181,8 +250,8 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     linkedin_url: Optional[str] = Field(default=None)
     past_speaking_examples: Optional[List[PastSpeakingExampleItem]] = Field(default=None)
     video_links: Optional[List[str]] = Field(default=None)
-    talk_description: Optional[str] = Field(default=None, min_length=1)
-    key_takeaways: Optional[str] = Field(default=None, min_length=1)
+    talk_description: Optional[Union[str, TalkDescriptionObject]] = Field(default=None)
+    key_takeaways: Optional[Union[str, List[str]]] = Field(default=None)
     target_audiences: Optional[List[SpeakerTargetAudienceItem]] = Field(default=None, min_length=1)
     name_salutation: Optional[str] = None
     bio: Optional[str] = None
@@ -196,7 +265,17 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     phone_number: Optional[str] = None
     professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
-    testimonial: Optional[str] = None
+    testimonial: Optional[Union[str, List[str]]] = None
+
+    @field_validator("talk_description", mode="before")
+    @classmethod
+    def _v_talk_description_f(cls, v: Any) -> Any:
+        return _coerce_talk_description_value(v)
+
+    @field_validator("key_takeaways", "testimonial", mode="before")
+    @classmethod
+    def _v_str_list_fields_f(cls, v: Any) -> Any:
+        return _coerce_string_list_field(v)
 
     class Config:
         populate_by_name = True

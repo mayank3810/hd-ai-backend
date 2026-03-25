@@ -95,7 +95,9 @@ STEPS: List[StepDefinition] = [
     StepDefinition(
         step_name="talk_description",
         form_type="textarea",
-        question="Describe your talk or expertise",
+        question=(
+            "In your own words, describe your talk or expertise—we'll save a short title and an overview for your profile."
+        ),
         required=False,
         multi_select=False,
         allowed_values=None,
@@ -138,8 +140,7 @@ STEPS: List[StepDefinition] = [
         step_name="past_speaking_examples",
         form_type="textarea",
         question=(
-            "Please share any past speaking engagements in your own words—where you spoke, what it was about, "
-            "who the audience was, and roughly when. You can write in paragraphs or short bullets per event."
+            "Do you have past speaking examples you'd like to share? Please include the organization or event name and the corresponding date (month/year)."
         ),
         required=False,
         multi_select=False,
