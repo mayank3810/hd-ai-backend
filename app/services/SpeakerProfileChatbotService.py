@@ -65,25 +65,58 @@ _INVALID_FIXED_LIST_GUIDANCE = (
     "When full_name is in profile_json (or the user gave their name earlier in chat), start with their first name for a conversational tone—"
     "e.g. 'Alex, if your choice isn't on this list, you can add or change it anytime from your speaker profile.' "
     "If you don't have a name, use the same line without a leading name: 'If your choice isn't on this list, you can add or change it anytime from your speaker profile.' "
-    "Then ask ONLY the next question in order—do not paste the catalog again, do not re-ask the same field with a full option list, "
-    "and do not insist they pick from the list."
+    "FORBIDDEN when nothing matched the catalog: do NOT say you saved, recorded, added, or stored their wording (e.g. quoting 'train') for this field—nothing from that step was persisted if you omitted the field in upsert. "
+    "In the SAME assistant message, add one short follow-up asking whether they would like to continue with the next onboarding question (yes/no)—use clear, professional wording. "
+    "In that message do NOT ask the next profile question, do NOT show the next field's catalog bullets, do not paste the catalog again, "
+    "do not re-ask the same field with a full option list, and do not insist they pick from the list."
 )
 
-# Overrides model tendency to repeat "required + must pick from list" after off-catalog answers.
+# After off-catalog answers: acknowledge + ask to continue; only then show the next field (on yes).
 _FIXED_LIST_ADVANCE_AFTER_OFF_LIST = (
     "OFF-LIST OR REFUSED-LIST (fixed catalog fields): If the user's answer does not match any allowed catalog name "
     "(topics, speaking_formats, delivery_mode, or target_audiences), treat that step as DONE for the conversation. "
-    "In ONE assistant message: (1) the one short 'you/your' sentence from the guidance above; "
-    "(2) then the next field in REQUIRED FIELD ORDER only—never re-ask the same step you just closed (no second question on that field). "
-    "FORBIDDEN in that message after off-list topics: any question about topics, speaking about, subject areas, "
-    "or 'What topics would you like…'—the next step after topics is always speaking_formats. "
-    "FORBIDDEN after off-list speaking_formats: re-asking formats; next is delivery_mode. "
-    "FORBIDDEN after off-list delivery_mode: re-asking delivery; next is target_audiences. "
-    "FORBIDDEN after off-list target_audiences: re-asking audiences; next is the first optional field (talk_description). "
+    "In ONE assistant message (same turn, including after upsert_speaker_profile): (1) the one short 'you/your' profile sentence from the guidance above; "
+    "(2) ask whether they would like to continue with the next question—do NOT include the next field's question, intro line, or bullet list in this message. "
     "Call upsert_speaker_profile with only fields that matched the catalog; omit fields with zero matches—do not block the flow. "
-    "Example (topics off-list): first the one short profile sentence (with first name when known, e.g. 'Riley, if your choice isn't on this list…'), then a formats question whose choices are BULLETS (one catalog name per line, e.g. lines starting with •), "
-    "not a comma-separated run-on sentence. "
-    "WRONG: appending 'What topics would you like to speak about?' after the profile sentence."
+    "NEXT USER TURN: If they clearly want to continue (yes, sure, ok, yep, continue, let's go, go ahead, etc.), ask ONLY the next field in REQUIRED FIELD ORDER "
+    "with that field's options as bullet points per CATALOG CHOICE QUESTIONS—never re-ask the step you closed. "
+    "If they clearly want to pause (no, not now, later, not yet, hold on, etc.), reply in one short professional friendly message—"
+    "e.g. that no problem, and they can let you know whenever they're ready to continue with the next question. "
+    "Do NOT ask the next field's question in that pause reply and do NOT show its catalog bullets. "
+    "If their reply is ambiguous, ask one brief clarifying question: continue now or pause? "
+    "FORBIDDEN in the off-list acknowledgment message: any next-step catalog question or bullets (topics, formats, delivery, audiences, or optional fields). "
+    "FORBIDDEN after off-list topics until they confirm continue: formats, delivery, or audiences questions/bullets. "
+    "FORBIDDEN after off-list speaking_formats until they confirm continue: delivery or audiences questions/bullets. "
+    "FORBIDDEN after off-list delivery_mode until they confirm continue: audiences or optional questions/bullets. "
+    "FORBIDDEN after off-list target_audiences until they confirm continue: optional-field questions. "
+    "After they confirm continue, the next field's options must be bullets—not comma-separated run-on lists."
+)
+
+# Some selections match the catalog and some do not (e.g. "AI and Agriculture")—same pause as off-list before next question.
+_FIXED_LIST_PARTIAL_OR_MIXED_FLOW = (
+    "PARTIAL/MIXED CATALOG ANSWERS (topics, speaking_formats, delivery_mode, target_audiences only): "
+    "When the user names multiple selections or phrases for the CURRENT catalog step and at least one clearly maps to an allowed catalog option "
+    "while at least one other clearly does NOT match any allowed option, call upsert_speaker_profile with ONLY the matched catalog values for that field—"
+    "omit non-matching parts; do not invent catalog rows. "
+    "In ONE assistant message (same turn as that tool call): (1) Briefly confirm ONLY the exact catalog name(s) you actually passed in upsert_speaker_profile for that field—"
+    "never claim you saved the user's unmatched wording. "
+    "(2) In a separate short sentence, refer to the unmatched part in the user's own wording and say it isn't on this list and they can add or update that anytime from their speaker profile "
+    "(second person; lead with first name when full_name is known—same warm tone as the off-list profile line). "
+    "(3) Ask whether they would like to continue with the next onboarding question (yes/no)—clear, professional wording. "
+    "FORBIDDEN in that same message: the next field's question, its intro line, or its catalog bullets. "
+    "NEXT USER TURN: Same as OFF-LIST—yes/continue → ask ONLY the next field in order with bullets; no/pause → one short friendly reply that they can let you know when ready to continue, with no next question or bullets; ambiguous → one brief clarify. "
+    "If EVERYTHING the user named for that step matches the catalog, do NOT use this pause: use CONVERSATIONAL WRAPPER and move to the next field (with bullets)—no redundant 'continue?' prompt. "
+    "If NOTHING matches for that step, use ONLY the OFF-LIST flow, not this partial pattern."
+)
+
+# Prevent "I've saved your selection as 'train'" when train was never written to the profile.
+_FIXED_LIST_USER_FACING_TRUTH = (
+    "TRUTHFUL COPY FOR CATALOG FIELDS (topics, speaking_formats, delivery_mode, target_audiences): "
+    "What you say to the user MUST match upsert_speaker_profile in the same turn. "
+    "NEVER claim you saved, recorded, added, or stored a value for one of these fields using the user's free text (e.g. quoting 'train') "
+    "unless that exact string is an allowed catalog name you included in the tool arguments for that field. "
+    "If you omitted the field or passed an empty list because nothing matched, say only that their choice isn't on the list and they can update from their profile—do not describe their invalid wording as saved. "
+    "For partial/mixed answers, only name persisted catalog matches; for the rest, say not on the list / add from profile—never both 'saved as X' and 'not on the list' for the same X."
 )
 
 # Models often compress catalog questions into "A, B, or C?" after seeing compact examples—reinforce bullets.
@@ -92,7 +125,8 @@ _CATALOG_OPTIONS_BULLET_FORMAT = (
     "list the choices as bullet points—one option per line using • or - and the EXACT catalog names from get_allowed_values or the snapshot. "
     "Do NOT squeeze options into one sentence with commas or em-dashes (e.g. avoid 'Hybrid, In-person, or Virtual'). "
     "You may add one short intro line before the bullets (e.g. 'What speaking formats do you offer?'). "
-    "After an off-list advance, the NEXT field's options must still be bullets; only the prior sentence is plain text. "
+    "After the user confirms they want to continue following an off-list OR partial/mixed catalog answer, the NEXT field's options must still be bullets; "
+    "those pause turns are only profile-related sentences plus the continue question—no bullets for the next step there. "
     "This is not 'dumping the whole catalog': showing one category's list as bullets is required; forbidden is re-pasting every category when only one step is active."
 )
 
@@ -106,13 +140,26 @@ _PROFILE_COMPLETION_MESSAGE = (
     "Your speaker profile is complete. You may close this window and review your profile. Thank you!"
 )
 
+# Models often announce "optional fields" to the user; keep onboarding seamless.
+_FORBIDDEN_OPTIONAL_FIELDS_TRANSITION_USER_TEXT = (
+    "USER-FACING FORBIDDEN: Never announce that you are moving to or starting optional content. "
+    "Do NOT say (or close variants of): "
+    "Now let's move on to the optional fields; let us move on to the optional fields; "
+    "moving on to optional fields; next we'll cover optional fields; the optional fields section; "
+    "time for optional fields; optional questions next; we'll ask some optional questions; "
+    "the optional part of your profile; or any transition that names optional fields, optional questions, or optional sections. "
+    "Jump straight to the next concrete question with CONVERSATIONAL WRAPPER—never label a step as required, optional, or mandatory to the user."
+)
+
 # Warmer than bare Q&A; prescribed question strings stay verbatim after the opener.
 _CONVERSATIONAL_ACK_BEFORE_QUESTION = (
     "CONVERSATIONAL WRAPPER: Whenever you move to the next profile question (required or optional), begin with ONE short sentence—"
     "acknowledge their last answer, react warmly, or add one helpful line on why the next field matters (second person, professional, ≤25 words). "
     "Then ask the next question in the same message. Do not alter wording where instructions require EXACT or verbatim text—paste that question exactly after your opener (blank line between is fine). "
     "For catalog steps, opener → then your short intro line for that field → then bullet list (per CATALOG CHOICE QUESTIONS). "
-    "If the message already starts with the off-list profile sentence (optionally with a leading first name, e.g. 'Sam, if your choice isn't on this list…'), you may follow it directly with the next question/bullets without a redundant second ack, or add one brief bridge if it reads more natural. "
+    "If the message is the off-list turn OR the partial/mixed turn (saved matches + profile note for unmatched + asking whether to continue), "
+    "do not add the next question or catalog bullets in that same message. "
+    "After the user says yes to continuing, use the wrapper then the next question with bullets as usual. "
     "Still use ONLY the exact completion message after mark_profile_complete—no preamble there."
 )
 
@@ -215,6 +262,7 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
         + " "
         + _SOCIAL_URL_FIELD_RULES
         + " For past_speaking_examples, extract structured objects from the user's natural language; never ask them to fill a labeled form."
+        + " For topics, speaking_formats, delivery_mode, target_audiences: never tell the user you saved a value unless it is an exact catalog match you passed in this call."
     )
     return {
         "type": "function",
@@ -235,7 +283,10 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Only catalog names from get_allowed_values(value_type='topics'). "
-                            "If the user's wording matches nothing, omit topics entirely and advance to speaking_formats—never re-ask topics in the same turn."
+                            "If the user's wording matches nothing, omit topics entirely; follow OFF-LIST flow (profile sentence + ask to continue)—"
+                            "only after they agree, ask speaking_formats with bullets—never re-ask topics in the same turn as the off-list ack. "
+                            "If some named topics match the catalog and some do not, pass only matches; use PARTIAL/MIXED flow "
+                            "(confirm saved + unmatched can be updated from profile + ask to continue)—do not ask speaking_formats in that same message."
                         ),
                     },
                     "speaking_formats": {
@@ -243,7 +294,8 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Catalog names from get_allowed_values(value_type='speaking_formats') only. "
-                            "Zero matches → omit field; ask delivery_mode next—do not re-ask speaking_formats."
+                            "Zero matches → omit field; follow OFF-LIST flow first—only after user confirms continue, ask delivery_mode with bullets. "
+                            "Partial match (some formats match, some do not) → save only matches; PARTIAL/MIXED flow before delivery_mode question."
                         ),
                     },
                     "delivery_mode": {
@@ -251,7 +303,8 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Catalog names from get_allowed_values(value_type='delivery_mode') only. "
-                            "Zero matches → omit field; ask target_audiences next—do not re-ask delivery_mode."
+                            "Zero matches → omit field; follow OFF-LIST flow first—only after user confirms continue, ask target_audiences with bullets. "
+                            "Partial match → save only matches; PARTIAL/MIXED flow before target_audiences question."
                         ),
                     },
                     "talk_description": {"type": "string"},
@@ -260,7 +313,9 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Catalog names from get_allowed_values(value_type='target_audiences') only. "
-                            "Zero matches → omit field; ask talk_description next—do not re-ask target_audiences."
+                            "Zero matches → omit field; follow OFF-LIST flow first—only after user confirms continue, ask talk_description (optional flow). "
+                            "Partial match → save only matches; PARTIAL/MIXED flow before optional talk_description. "
+                            "In user-facing text, never claim you saved a string that you did not pass here as an exact catalog name."
                         ),
                     },
                     "linkedin_url": {"type": "string", "description": "Full LinkedIn profile URL only (linkedin.com)."},
@@ -636,6 +691,8 @@ class SpeakerProfileChatbotService:
                 "Whenever listing options or structured information, strictly format the response as bullet points. "
                 + _CATALOG_OPTIONS_BULLET_FORMAT
                 + " "
+                + _FIXED_LIST_USER_FACING_TRUTH
+                + " "
 
                 "EXISTING PROFILE CONTEXT: "
                 "A speaker profile already exists. Current profile data: "
@@ -650,12 +707,15 @@ class SpeakerProfileChatbotService:
                 "CONVERSATION RULES: "
                 "Ask for only ONE new profile field per turn (one main question), optionally preceded by one short ack sentence per CONVERSATIONAL WRAPPER—do not bundle two different fields in one turn. "
                 "Required fields cannot be skipped EXCEPT for catalog fields (topics, speaking_formats, delivery_mode, target_audiences): "
-                "if the user's answer matches no catalog option or they refuse the list, that counts as having addressed that step—advance to the next field in order; never re-ask that same catalog question in the same turn. "
+                "if the user's answer matches no catalog option or they refuse the list, that counts as having addressed that step—use the OFF-LIST flow (profile sentence + ask if they want to continue); only after they agree, ask the next field in order; never re-ask that same catalog question in the off-list acknowledgment turn. "
+                "If their answer is PARTIAL/MIXED (some catalog matches plus at least one clear non-catalog item for the same step), save only matches, use the PARTIAL/MIXED flow (confirm + profile note for unmatched + ask to continue)—same pause as off-list; only after they agree, ask the next field. "
                 "If the user evades with an empty or unrelated non-answer, politely ask again. "
                 "If user provides multiple fields at once, extract and save all. "
                 "Adapt questions naturally using chat history and profile_json. "
                 "Stay focused ONLY on onboarding. "
                 "Never announce that required fields are done or that you are moving to optional questions—use the CONVERSATIONAL WRAPPER instead of process-speak. "
+                + _FORBIDDEN_OPTIONAL_FIELDS_TRANSITION_USER_TEXT
+                + " "
                 + _CONVERSATIONAL_ACK_BEFORE_QUESTION
                 + " "
 
@@ -673,11 +733,14 @@ class SpeakerProfileChatbotService:
                 "If the user's answer is not on the list (or they refuse the list), use this response pattern in ONE short turn: "
                 + repr(_INVALID_FIXED_LIST_GUIDANCE)
                 + " "
-                "FORBIDDEN after an off-list answer: repeating the same step with a full option list (topics, speaking formats, delivery mode, or target audiences), "
-                "or pasting all four categories (topics+formats+delivery+audiences) in one message when only one step is active, or asking them to pick from the list a second time for that step. "
-                "Allowed and required: for the ONE active catalog step, show that step's options as bullet points (see CATALOG CHOICE QUESTIONS). "
+                "PARTIAL/MIXED fixed-list answers: "
+                + _FIXED_LIST_PARTIAL_OR_MIXED_FLOW
+                + " "
+                "FORBIDDEN after an off-list OR partial/mixed pause message: in that SAME assistant message, also asking the next field or showing the next field's bullets; repeating the closed step with a full option list; "
+                "or pasting all four categories (topics+formats+delivery+audiences) in one message when only one step is active; or asking them to pick from the list a second time for the step you just closed. "
+                "Allowed and required: when actively asking a catalog step (not an off-list or partial/mixed pause turn), show that step's options as bullet points (see CATALOG CHOICE QUESTIONS). "
                 "Optional: you may offer at most one closest catalog name in a short phrase—without reprinting all options. "
-                "Then call upsert_speaker_profile only with valid list values you could match; if none, omit that field and still advance. "
+                "Call upsert_speaker_profile only with valid list values you could match; if none, omit that field (OFF-LIST flow); if some match, pass only those (PARTIAL/MIXED flow when anything they named did not match); in both cases wait for continue before the next field's question. "
                 + _FIXED_LIST_USER_DEFERS
                 + " "
                 + _FIXED_LIST_ADVANCE_AFTER_OFF_LIST
@@ -707,6 +770,9 @@ class SpeakerProfileChatbotService:
                 "Never say phrases like: "
                 "'Now that we have all the required fields', "
                 "'Let’s move to optional questions', "
+                "'Now let's move on to the optional fields', "
+                "'Let's move on to optional fields', "
+                "'moving on to optional fields', "
                 "'Let’s move on', "
                 "'Next, I will ask', "
                 "'All required fields are done', "
@@ -771,14 +837,18 @@ class SpeakerProfileChatbotService:
                 Important Conversation Rules
 
                 • One new profile field per turn (one main question); you may add one short ack sentence before it (see CONVERSATIONAL WRAPPER).
-                • Required fields cannot be skipped EXCEPT: for catalog fields, if the user's answer matches nothing on the list or they refuse the list, advance to the next field—do not re-ask that catalog question.
+                • Required fields cannot be skipped EXCEPT: for catalog fields, if the user's answer matches nothing on the list or they refuse the list, use the OFF-LIST flow (profile sentence + ask to continue); if some items match and some do not, use PARTIAL/MIXED flow (confirm matches + profile note for unmatched + ask to continue); only after they agree, ask the next field—do not bundle the next question in those pause messages.
                 • If the user avoids answering with an empty evasion, politely ask again.
                 • If the user provides multiple fields at once, extract and store them.
                 • Always guide the user to complete onboarding.
 
+                {_FORBIDDEN_OPTIONAL_FIELDS_TRANSITION_USER_TEXT}
+
                 {_CONVERSATIONAL_ACK_BEFORE_QUESTION}
 
                 {_CATALOG_OPTIONS_BULLET_FORMAT}
+
+                {_FIXED_LIST_USER_FACING_TRUTH}
 
                 Email Rules
 
@@ -797,7 +867,8 @@ class SpeakerProfileChatbotService:
                 Fixed Choice Fields
 
                 Store in upsert_speaker_profile only exact matches from the allowed lists below (system catalog only, type=system).
-                If the user names something not on the list, omit that field in upsert and still advance in conversation—never re-ask topics after an off-list topics answer.
+                If the user names something not on the list, omit that field in upsert and use the OFF-LIST flow before the next field—never re-ask topics in the same message as the off-list profile sentence.
+                If they name a mix (some on-list, some not), save only matches and use the PARTIAL/MIXED flow—never ask the next catalog step in that same message.
 
                 Topics (User may choose multiple)
 
@@ -825,9 +896,13 @@ class SpeakerProfileChatbotService:
 
                 FORBIDDEN: After that explanation, do NOT immediately re-ask the same field with a full list (topics, formats, delivery, or audiences), and do NOT paste all four category lists in one message when only one step is active.
 
-                CORRECT pattern after any off-list fixed-field answer: one short "you/your" sentence (profile update later), then the next required question with that next field's options as bullet points only—not comma-separated inline lists.
+                CORRECT pattern after any off-list fixed-field answer: one short "you/your" sentence (profile update later), then ask whether they want to continue with the next question—no next-field question or bullets in that same message. After they say yes, ask the next required field with that field's options as bullet points only—not comma-separated inline lists.
+
+                CORRECT pattern after a PARTIAL/MIXED answer: confirm saved catalog match(es); one line that the unmatched wording can be added or updated from their speaker profile; ask whether to continue—no next-field bullets until they agree.
 
                 {_FIXED_LIST_ADVANCE_AFTER_OFF_LIST}
+
+                {_FIXED_LIST_PARTIAL_OR_MIXED_FLOW}
 
                 Talk Description (optional, first optional after required fields)
 
@@ -860,7 +935,7 @@ class SpeakerProfileChatbotService:
 
                 Optional fields flow
 
-                After all required fields are collected, you MUST ask each optional field one at a time: talk_description, key_takeaways, linkedin_url (social URLs question), past_speaking_examples, video_links, testimonial (last). You must ask every optional question. If the user skips or declines, acknowledge and move to the next optional question. Only after you have asked the last optional question (testimonial—user answered or skipped) may you call mark_profile_complete. FORBIDDEN: Never say 'Now that we have all the required fields', 'Let\'s move on to optional questions', 'Let\'s move on to some optional questions', or any sentence that announces required vs optional. For each next question, use CONVERSATIONAL WRAPPER (short ack or helpful line, then the question—verbatim where specified).
+                After all required fields are collected, you MUST ask each optional field one at a time: talk_description, key_takeaways, linkedin_url (social URLs question), past_speaking_examples, video_links, testimonial (last). You must ask every optional question. If the user skips or declines, acknowledge and move to the next optional question. Only after you have asked the last optional question (testimonial—user answered or skipped) may you call mark_profile_complete. FORBIDDEN: Never say 'Now that we have all the required fields', 'Let\'s move on to optional questions', 'Let\'s move on to some optional questions', 'Now let\'s move on to the optional fields', 'moving on to optional fields', or any sentence that announces required vs optional or optional fields as a section. For each next question, use CONVERSATIONAL WRAPPER (short ack or helpful line, then the question—verbatim where specified).
 
                 Completion
 
