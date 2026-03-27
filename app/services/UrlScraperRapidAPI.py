@@ -18,7 +18,7 @@ from app.config.recent_activity import (
     message_opportunities_added,
 )
 from app.models.UrlCollection import UrlCollectionModel
-from app.models.Opportunity import OpportunityModel
+from app.models.Opportunity import OpportunityModel, opportunity_dedupe_key
 from app.models.RecentActivity import RecentActivityModel
 from app.helpers.RapidAPIScraper import RapidAPIScraper
 from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
@@ -179,7 +179,12 @@ class UrlScraperRapidAPIService:
         return {"success": True, "data": "Scraper deleted successfully"}
 
     async def run_scrape_and_extract(
-        self, url_collection_id: str, url: str, delay_seconds: float = 0, from_google_query: bool = False
+        self,
+        url_collection_id: str,
+        url: str,
+        delay_seconds: float = 0,
+        from_google_query: bool = False,
+        google_search_query: str = "",
     ) -> int:
         """
         Background task: scrape URL via RapidAPI, extract opportunities via LLM,
@@ -195,6 +200,7 @@ class UrlScraperRapidAPIService:
             delay_seconds: Optional delay before each RapidAPI call (e.g. 5 for cron). Default 0.
             from_google_query: If True, opportunities are tagged as found via Google query search; if False, from direct URL scraping.
             Per-URL recent-activity for scraper/opportunities is skipped when True; the caller aggregates one opportunities row.
+            google_search_query: When from_google_query is True, the SERP query string (stored on source and included in vector search text).
         """
         logger.info("Background job started url_collection_id=%s url=%s", url_collection_id, url[:80])
         try:
@@ -256,23 +262,66 @@ class UrlScraperRapidAPIService:
                 opp["metadata"]["urlCollectionId"] = url_collection_id
                 if not opp["metadata"].get("description") or not str(opp["metadata"].get("description", "")).strip():
                     opp["metadata"]["description"] = (description or opp.get("event_name") or "").strip() or ""
-                opp["source"] = {"google_query": from_google_query, "source_url": url}
+                src: dict = {"google_query": from_google_query, "source_url": url}
+                if from_google_query:
+                    q = (google_search_query or "").strip()
+                    if q:
+                        src["google_search_query"] = q
+                opp["source"] = src
 
             if complete:
-                inserted_ids = await self.opportunity_model.insert_many(complete)
-                logger.info("Job %s completed: inserted %d opportunities into Opportunities collection", url_collection_id, len(inserted_ids))
+                existing_keys = await self.opportunity_model.find_existing_dedupe_keys(complete)
+                to_insert: list[dict] = []
+                seen_batch: set[tuple[str, str]] = set()
+                skipped_db = 0
+                skipped_batch = 0
+                for opp in complete:
+                    k = opportunity_dedupe_key(opp)
+                    if not k:
+                        continue
+                    if k in existing_keys:
+                        skipped_db += 1
+                        continue
+                    if k in seen_batch:
+                        skipped_batch += 1
+                        continue
+                    seen_batch.add(k)
+                    to_insert.append(opp)
+
+                if skipped_db or skipped_batch:
+                    logger.info(
+                        "Job %s: skipping %d opportunity(ies) already in Mongo, %d duplicate(s) within batch",
+                        url_collection_id,
+                        skipped_db,
+                        skipped_batch,
+                    )
+
+                if not to_insert:
+                    logger.info(
+                        "Job %s completed: 0 new opportunities (all duplicates or no valid keys)",
+                        url_collection_id,
+                    )
+                    return 0
+
+                inserted_ids = await self.opportunity_model.insert_many(to_insert)
+                logger.info(
+                    "Job %s completed: inserted %d opportunities into Opportunities collection",
+                    url_collection_id,
+                    len(inserted_ids),
+                )
                 if not from_google_query:
                     await self.recent_activity_model.try_insert_activity(
                         RECENT_ACTIVITY_TYPE_OPPORTUNITIES,
                         message_opportunities_added(len(inserted_ids)),
                     )
-                # Push each opportunity to Pinecone (vector DB) in thread to avoid blocking
+                # Push each inserted opportunity to Pinecone (vector DB) in thread to avoid blocking
                 try:
                     store = PineconeOpportunityStore()
                     if store.is_configured():
                         def _upsert_batch():
-                            for opp, oid in zip(complete, inserted_ids):
+                            for opp, oid in zip(to_insert, inserted_ids):
                                 store.upsert_opportunity(oid, opp)
+
                         await asyncio.to_thread(_upsert_batch)
                         logger.info("Job %s: pushed %d opportunities to Pinecone", url_collection_id, len(inserted_ids))
                 except Exception as pin_e:

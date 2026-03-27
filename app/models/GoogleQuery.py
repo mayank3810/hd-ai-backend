@@ -1,5 +1,8 @@
 import os
+from datetime import datetime
+
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 from app.helpers.Database import MongoDB
 
@@ -58,4 +61,28 @@ class GoogleQueryModel:
             query["userId"] = user_id
         result = await self.collection.delete_one(query)
         return result.deleted_count > 0
+
+    async def claim_pending_jobs(self, limit: int = 10) -> list[dict]:
+        """
+        Atomically claim up to `limit` documents with status \"pending\" (oldest by createdAt first).
+        Each claimed doc is set to status \"running\" so concurrent workers do not duplicate work.
+        """
+        claimed: list[dict] = []
+        for _ in range(limit):
+            doc = await self.collection.find_one_and_update(
+                {"status": "pending"},
+                {
+                    "$set": {
+                        "status": "running",
+                        "updatedAt": datetime.utcnow(),
+                        "error": None,
+                    }
+                },
+                sort=[("createdAt", 1)],
+                return_document=ReturnDocument.AFTER,
+            )
+            if doc is None:
+                break
+            claimed.append(doc)
+        return claimed
 

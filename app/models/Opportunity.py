@@ -1,8 +1,21 @@
+import os
 from typing import List
 
-from app.helpers.Database import MongoDB
 from bson import ObjectId
-import os
+
+from app.helpers.Database import MongoDB
+
+
+def opportunity_dedupe_key(opp: dict) -> tuple[str, str] | None:
+    """
+    Identity for duplicate detection: (stripped link, normalized event name).
+    Aligns with SpeakingOpportunityExtractor._deduplicate_opportunities (event_name lower[:100]).
+    """
+    link = (opp.get("link") or opp.get("url") or "").strip()
+    event_name = (opp.get("event_name") or opp.get("title") or "").strip().lower()[:100]
+    if not link or not event_name:
+        return None
+    return (link, event_name)
 
 
 class OpportunityModel:
@@ -17,6 +30,26 @@ class OpportunityModel:
             return []
         result = await self.collection.insert_many(opportunities)
         return [str(oid) for oid in result.inserted_ids]
+
+    async def find_existing_dedupe_keys(self, opportunities: list[dict]) -> set[tuple[str, str]]:
+        """Keys (link, event_name_norm) already present in the collection for the given links."""
+        unique_links: set[str] = set()
+        for o in opportunities:
+            link = (o.get("link") or o.get("url") or "").strip()
+            if link:
+                unique_links.add(link)
+        if not unique_links:
+            return set()
+        existing: set[tuple[str, str]] = set()
+        cursor = self.collection.find(
+            {"link": {"$in": list(unique_links)}},
+            projection={"link": 1, "event_name": 1, "title": 1},
+        )
+        async for doc in cursor:
+            k = opportunity_dedupe_key(doc)
+            if k:
+                existing.add(k)
+        return existing
 
     async def get_list(self, skip: int = 0, limit: int = 10, sort_by: dict = None) -> list[dict]:
         """Get opportunities with pagination. Returns list of documents."""

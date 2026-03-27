@@ -107,6 +107,7 @@ class GoogleQueryScraperService:
                         url,
                         delay_seconds=RAPIDAPI_DELAY_SECONDS,
                         from_google_query=True,
+                        google_search_query=query,
                     )
                     total_opportunities_inserted += n
                 except Exception as e:
@@ -132,4 +133,51 @@ class GoogleQueryScraperService:
                 google_query_id,
                 {"status": "failed", "error": str(e), "updatedAt": datetime.utcnow()},
             )
+
+    async def process_pending_batch(self, limit: int = 10) -> dict:
+        """
+        Claim up to `limit` pending GoogleQueries (e.g. bulk-inserted) and run the same pipeline as the API
+        background task: SERP -> top URLs -> RapidAPI scrape -> opportunities (Mongo + vector) with duplicate checks.
+        Jobs run sequentially within this batch to reduce SERP/RapidAPI rate pressure.
+        """
+        claimed = await self.google_query_model.claim_pending_jobs(limit=limit)
+        summary = {
+            "claimed": len(claimed),
+            "completed": 0,
+            "failed": 0,
+            "skipped_invalid": 0,
+            "unexpected_status_after_run": 0,
+        }
+        for doc in claimed:
+            google_query_id = str(doc["_id"])
+            query = (doc.get("query") or "").strip()
+            user_id = doc.get("userId")
+            if user_id is not None:
+                user_id = str(user_id)
+            if not query:
+                await self.google_query_model.update_by_id(
+                    google_query_id,
+                    {
+                        "status": "failed",
+                        "error": "missing or empty query",
+                        "updatedAt": datetime.utcnow(),
+                    },
+                )
+                summary["skipped_invalid"] += 1
+                continue
+            await self.run_query_serp_and_scrape(google_query_id, query, user_id)
+            final = await self.google_query_model.get_by_id(google_query_id)
+            st = (final or {}).get("status")
+            if st == "completed":
+                summary["completed"] += 1
+            elif st == "failed":
+                summary["failed"] += 1
+            else:
+                summary["unexpected_status_after_run"] += 1
+                logger.warning(
+                    "GoogleQuery finished with unexpected status=%s google_query_id=%s",
+                    st,
+                    google_query_id,
+                )
+        return summary
 

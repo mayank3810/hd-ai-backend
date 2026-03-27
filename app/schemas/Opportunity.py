@@ -8,6 +8,7 @@ class OpportunitySourceSchema(BaseModel):
 
     google_query: bool = False  # True if found via Google query search, False if from direct URL scrape
     source_url: str = ""  # URL that was scraped (search result URL or the single URL scraped)
+    google_search_query: str = ""  # When google_query is True, the SERP query text (also used for vector search text)
 
 
 class OpportunitySchema(BaseModel):

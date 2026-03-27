@@ -8,6 +8,7 @@ All opportunity vectors are stored in and queried from the "opportunities" names
 Data added to the vector DB (per opportunity):
 - id: MongoDB opportunity _id (string)
 - values: embedding of text = topics + speaking_format + delivery_mode + target_audiences + metadata.description
+  (+ source.google_search_query when source.google_query is True)
 - metadata: {"opportunity_id": <Mongo _id>}
 """
 import logging
@@ -31,7 +32,8 @@ class OpportunityTextBuilder:
 
     @staticmethod
     def from_opportunity(opp: dict) -> str:
-        """Build text from opportunity: topics, speaking_format, delivery_mode, target_audiences, metadata.description."""
+        """Build text from opportunity: topics, speaking_format, delivery_mode, target_audiences, metadata.description,
+        and when found via Google query, source.google_search_query."""
         parts = []
         topics = opp.get("topics") or []
         if isinstance(topics, list):
@@ -48,6 +50,11 @@ class OpportunityTextBuilder:
         meta = opp.get("metadata") or {}
         if isinstance(meta, dict) and meta.get("description"):
             parts.append(str(meta["description"]).strip())
+        src = opp.get("source") or {}
+        if isinstance(src, dict) and src.get("google_query"):
+            gq = (src.get("google_search_query") or "").strip()
+            if gq:
+                parts.append(gq)
         return " ".join(parts).strip() or ""
 
     @staticmethod
