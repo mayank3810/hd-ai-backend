@@ -51,7 +51,7 @@ async def _provision_speaker_profile_with_new_user(
     model,
     auth_service,
     profile_data: dict,
-    jwt_actor_id: str,
+    # jwt_actor_id: str,
 ) -> dict:
     """
     Normalize email/full_name, reject duplicates, create users row + speaker profile,
@@ -102,7 +102,7 @@ async def _provision_speaker_profile_with_new_user(
         email=email,
         full_name=full_name,
         plain_password=plain_password,
-        admin_id=str(jwt_actor_id),
+        # admin_id=str(jwt_actor_id),
     )
     if not created.get("success"):
         raise HTTPException(
@@ -266,7 +266,7 @@ async def update_speaker_profile(
 @router.post("/create-speaker-profile", response_model=ServerResponse, status_code=201)
 async def create_speaker_profile(
     body: SpeakerProfileCreateFormSchema,
-    jwt_payload: dict = Depends(jwt_validator),
+    # jwt_payload: dict = Depends(jwt_validator),
     model=Depends(get_speaker_profile_model),
     auth_service=Depends(get_auth_service),
 ):
@@ -275,19 +275,19 @@ async def create_speaker_profile(
     Requires email and full_name; provisions a new users account for that email and links the profile to it.
     Optional fields are stored when provided.
     """
-    user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
-    if not user_id:
-        raise HTTPException(
-            status_code=401,
-            detail={"data": None, "error": "User ID not found in token.", "success": False},
-        )
+    # user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+    # if not user_id:
+    #     raise HTTPException(
+    #         status_code=401,
+    #         detail={"data": None, "error": "User ID not found in token.", "success": False},
+    #     )
 
     profile_data = body.model_dump(exclude_unset=True, by_alias=True)
     doc = await _provision_speaker_profile_with_new_user(
         model=model,
         auth_service=auth_service,
         profile_data=profile_data,
-        jwt_actor_id=str(user_id),
+        # jwt_actor_id=str(user_id),
     )
     return Utils.create_response({"id": str(doc["_id"]), "profile": doc}, True)
 
