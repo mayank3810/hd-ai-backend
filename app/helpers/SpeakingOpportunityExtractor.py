@@ -185,7 +185,9 @@ For each opportunity, extract and return a JSON array of objects with EXACTLY th
 - speaking_format: You MUST choose exactly ONE from this list (use the exact string): """ + _SPEAKING_FORMATS_STR + """. Pick the one that best matches the event type.
 - delivery_mode: You MUST choose exactly ONE from this list (use the exact string), or empty string if unclear: """ + _DELIVERY_MODE_STR + """
 - target_audiences: Array of audience types. You MUST choose ONLY from this exact list (use the exact strings): """ + _TARGET_AUDIENCES_STR + """. Empty array if none match.
-- metadata: Object that MUST include "description" (1-2 sentences about the opportunity; use event name or page context if needed). May also include deadline, contact, etc. Never leave description empty.
+- application_submission_deadline: Speaker / call-for-speakers application deadline in ISO format YYYY-MM-DD if explicitly stated on the page, otherwise null. Do not guess.
+- application_submission_closed: boolean, true ONLY if the page explicitly states that applications are closed, the deadline has passed, or submissions are no longer accepted; otherwise false.
+- metadata: Object that MUST include "description" (1-2 sentences about the opportunity; use event name or page context if needed). May also include contact email, venue, etc. You may repeat application_submission_deadline or application_submission_closed here if helpful. Never leave description empty.
 
 Return ONLY valid JSON, no other text. Do not invent or hallucinate - only extract what is explicitly present. Only include events that are in the future.
 If no opportunities are found in this chunk, return []."""
@@ -196,8 +198,9 @@ If no opportunities are found in this chunk, return []."""
 {content}
 ---
 
-Return a JSON array of opportunity objects with keys: link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences, metadata.
+Return a JSON array of opportunity objects with keys: link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences, application_submission_deadline, application_submission_closed, metadata.
 - Use start_date and end_date in ISO format (YYYY-MM-DD). For one-day events set end_date equal to start_date. Only include FUTURE events.
+- application_submission_deadline: ISO date or null. application_submission_closed: true/false per page wording only.
 - Use ONLY: topics from """ + _TOPICS_LIST_STR + """; speaking_format from """ + _SPEAKING_FORMATS_STR + """; delivery_mode from """ + _DELIVERY_MODE_STR + """; target_audiences from """ + _TARGET_AUDIENCES_STR + """.
 - Do NOT include webinars or seminars (attend-only). Only opportunities where a speaker can speak.
 - topics must have at least one item. If none found, return []."""
@@ -284,9 +287,37 @@ Return a JSON array of opportunity objects with keys: link, event_name, location
             end_iso = start_iso
 
         meta = opp.get("metadata") if isinstance(opp.get("metadata"), dict) else {}
+        meta = dict(meta)
         event_name = opp.get("event_name") or opp.get("title") or ""
         if "description" not in meta or not str(meta.get("description", "")).strip():
-            meta = {**meta, "description": (meta.get("description") or event_name or "").strip() or ""}
+            meta["description"] = (meta.get("description") or event_name or "").strip() or ""
+
+        # Application / speaker submission fields (also read from nested metadata keys)
+        for mk in ("application_submission_deadline", "speaker_application_deadline"):
+            if meta.get(mk):
+                p = _parse_date_to_iso(meta.get(mk))
+                if p:
+                    meta["application_submission_deadline"] = p
+                    break
+        tl_deadline = opp.get("application_submission_deadline")
+        if tl_deadline is not None and str(tl_deadline).strip():
+            p = _parse_date_to_iso(tl_deadline)
+            if p:
+                meta["application_submission_deadline"] = p
+
+        tl_closed = opp.get("application_submission_closed")
+        meta_closed = meta.get("application_submission_closed")
+        closed = False
+        if tl_closed is True:
+            closed = True
+        elif isinstance(tl_closed, str) and tl_closed.strip().lower() in ("true", "yes", "1"):
+            closed = True
+        if meta_closed is True:
+            closed = True
+        elif isinstance(meta_closed, str) and meta_closed.strip().lower() in ("true", "yes", "1"):
+            closed = True
+        if closed:
+            meta["application_submission_closed"] = True
 
         return {
             "link": opp.get("link") or opp.get("url") or "",

@@ -124,7 +124,7 @@ Extract and return a JSON object with EXACTLY these keys (no array, single objec
 - speaking_format: You MUST choose exactly ONE from this list (use the exact string): """ + _SPEAKING_FORMATS_STR + """
 - delivery_mode: You MUST choose exactly ONE from this list (use the exact string), or empty string if unclear: """ + _DELIVERY_MODE_STR + """
 - target_audiences: Array of audience types. You MUST choose ONLY from this exact list (use the exact strings): """ + _TARGET_AUDIENCES_STR + """. Empty array if none match.
-- metadata: Object with description (1-2 sentences), venue name if mentioned, contact info if any, deadline if any. Use {} for empty.
+- metadata: Object with description (1-2 sentences), venue name if mentioned, contact info if any. Include when present on the page: application_submission_deadline (ISO YYYY-MM-DD or omit), application_submission_closed (boolean, true only if explicitly closed / no longer accepting). Use {} for empty.
 
 Return ONLY valid JSON, no other text. Extract only what is explicitly present; use empty string, [], or null for missing fields. topics must always have at least one item from the allowed list."""
 

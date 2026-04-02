@@ -24,6 +24,8 @@ class OpportunitySchema(BaseModel):
     delivery_mode: str = ""  # Virtual or in person
     target_audiences: List[str] = Field(default_factory=list)  # General Audience, managers, etc.
     source: Optional[OpportunitySourceSchema] = None  # How this opportunity was found (google query vs URL)
+    isQualified: Optional[bool] = None  # False: kept in Mongo but not embedded in vector DB
+    reasonForUnqualify: Optional[str] = None  # Human-readable when isQualified is False
     metadata: dict = Field(default_factory=dict)
 
     class Config:

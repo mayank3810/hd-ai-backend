@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from app.models.Scraper import ScraperModel
 from app.helpers.RapidAPIScraper import RapidAPIScraper
 from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
+from app.helpers.OpportunityQualifier import qualify_opportunities_batch
 
 
 class ScraperRapidAPIService:
@@ -96,6 +97,13 @@ class ScraperRapidAPIService:
 
             # 2. LLM extract speaking opportunities
             opportunities, llm_error = self.opportunity_extractor.extract(content)
+            if opportunities:
+                qualify_opportunities_batch(
+                    opportunities,
+                    scraper=self.rapidapi_scraper,
+                    source_page_url=url,
+                    source_page_content=content,
+                )
             error_to_store = llm_error if llm_error and not opportunities else None
 
             # 3. Update DB with success

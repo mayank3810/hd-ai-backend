@@ -4,6 +4,7 @@ Flow: Save url+createdAt to UrlCollection -> background task scrapes -> updates 
 No connection with existing Scraper/Scrapers collection.
 Blocking I/O (RapidAPI requests, OpenAI) runs in a thread pool to avoid blocking the event loop.
 PDF URLs are not scraped. Only opportunities with all required fields (link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences) are saved.
+Qualified opportunities (isQualified) are upserted to Pinecone; unqualified are Mongo-only with reasonForUnqualify.
 """
 import asyncio
 import logging
@@ -24,6 +25,7 @@ from app.helpers.RapidAPIScraper import RapidAPIScraper
 from app.helpers.SpeakingOpportunityExtractor import SpeakingOpportunityExtractor
 from app.helpers.SerpHelper import SerpHelper
 from app.helpers.PineconeOpportunityStore import PineconeOpportunityStore
+from app.helpers.OpportunityQualifier import qualify_opportunities_batch
 from app.agents.EventDetailEnricherAgent import EventDetailEnricherAgent
 
 RAPIDAPI_DELAY_SECONDS = 5
@@ -117,6 +119,12 @@ def _sync_scrape_extract_enrich(url: str, delay_seconds: float = 0) -> Optional[
         logger.warning("LLM extraction error: %s", llm_error)
     if opportunities:
         opportunities = enricher.enrich_opportunities(opportunities)
+        qualify_opportunities_batch(
+            opportunities,
+            scraper=scraper,
+            source_page_url=url,
+            source_page_content=content,
+        )
 
     return {"source_name": source_name, "description": description, "opportunities": opportunities or []}
 
@@ -319,11 +327,21 @@ class UrlScraperRapidAPIService:
                     store = PineconeOpportunityStore()
                     if store.is_configured():
                         def _upsert_batch():
+                            n_vec = 0
                             for opp, oid in zip(to_insert, inserted_ids):
-                                store.upsert_opportunity(oid, opp)
+                                if opp.get("isQualified"):
+                                    if store.upsert_opportunity(oid, opp):
+                                        n_vec += 1
+                            return n_vec
 
-                        await asyncio.to_thread(_upsert_batch)
-                        logger.info("Job %s: pushed %d opportunities to Pinecone", url_collection_id, len(inserted_ids))
+                        n_pinecone = await asyncio.to_thread(_upsert_batch)
+                        n_unqualified = sum(1 for o in to_insert if not o.get("isQualified"))
+                        logger.info(
+                            "Job %s: Pinecone upserted %d qualified vector(s); %d not qualified (Mongo only)",
+                            url_collection_id,
+                            n_pinecone,
+                            n_unqualified,
+                        )
                 except Exception as pin_e:
                     logger.warning("Pinecone upsert failed for job %s: %s", url_collection_id, pin_e)
                 return len(inserted_ids)
