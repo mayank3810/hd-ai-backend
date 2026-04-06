@@ -1,5 +1,5 @@
 """
-Speaker options: GET/POST/DELETE for topics; GET/POST for target audiences, delivery modes, speaking formats.
+Speaker options: GET/POST/DELETE for topics and target audiences; GET/POST for delivery modes, speaking formats.
 Catalog data for speaker profile flows; stored in Mongo with { name, slug, type }.
 """
 from typing import Optional
@@ -107,6 +107,25 @@ async def create_speaker_target_audience(
     if err == "invalid_name":
         raise _create_error_response("Invalid name or slug.", 400)
     return Utils.create_response(doc, True)
+
+
+@router.delete("/target-audiences/{audience_id}", response_model=ServerResponse)
+async def delete_speaker_target_audience(
+    audience_id: str,
+    model=Depends(get_speaker_target_audience_model),
+):
+    """Remove a target audience by id. System and legacy (no type) rows cannot be deleted."""
+    err = await model.delete_one_non_system(audience_id)
+    if err == "invalid_id":
+        raise _create_error_response("Invalid target audience id.", 400)
+    if err == "not_found":
+        raise _create_error_response("Target audience not found.", 404)
+    if err == "system_topic":
+        raise _create_error_response("Only non-system target audiences can be deleted.", 403)
+    return Utils.create_response(
+        {"_id": audience_id, "message": "Target audience deleted successfully"},
+        True,
+    )
 
 
 @router.get("/delivery-modes", response_model=ServerResponse)
