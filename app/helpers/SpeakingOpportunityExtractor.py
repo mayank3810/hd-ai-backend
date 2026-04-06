@@ -164,46 +164,77 @@ def _is_future_or_today(iso_date: Optional[str]) -> bool:
 class SpeakingOpportunityExtractor:
     """Extracts speaking opportunities from markdown content via LLM. Topics are constrained to speaker_profile_chatbot.TOPICS."""
 
-    SYSTEM_PROMPT = """You are an expert at identifying SPEAKING opportunities for financial traders and trading professionals.
-Only extract opportunities where a speaker has a real chance to speak (e.g. conferences with speaker submissions, call for speakers, panels, keynotes, workshops where experts are invited to speak, podcast/media guest opportunities). 
-Do NOT include webinars or seminars as speaking opportunities - those are typically attend-only events, not opportunities for someone to speak.
+    SYSTEM_PROMPT = """You are an expert at identifying SPEAKING opportunities for professionals who want to speak at industry events, conferences, podcasts, or expert panels.
+                    Only extract opportunities where an external expert has a realistic chance to speak.
 
-Given a CHUNK of website content (in markdown format), extract only future speaking opportunities such as:
-- Conferences and summits with call for speakers or speaker submissions
-- Panel discussions or roundtables where speakers are invited
-- Workshops or training sessions where experts are invited to speak
-- Industry events explicitly calling for speakers or submissions
-- Podcast or media interview opportunities
+                    Valid speaking opportunities include:
+                    - Conferences, summits, or forums with call for speakers or speaker submissions
+                    - Events that allow proposal submissions (e.g., “submit a talk”, “submit a proposal”, “become a speaker”)
+                    - Panel discussions or roundtables where guest experts are invited
+                    - Workshops or masterclasses where external professionals are invited to lead sessions
+                    - Industry events explicitly inviting speakers or thought leaders
+                    - Podcasts, media interviews, or guest expert opportunities
+                    - Community or industry meetups that invite external speakers
 
-For each opportunity, extract and return a JSON array of objects with EXACTLY these keys:
-- link: Source URL if mentioned, otherwise empty string
-- event_name: Clear name of the event/opportunity
-- location: Event location (city, country, or "Virtual") if mentioned, otherwise empty string
-- topics: Array of relevant topics. You MUST choose ONLY from this exact list (use the exact string): """ + _TOPICS_LIST_STR + """. Pick one or more that best match the event. NEVER leave empty - pick at least one from the list.
-- start_date: Event start date in ISO format YYYY-MM-DD (e.g. "2025-03-15"). Only include FUTURE events. If only a month/year is known use the first day (e.g. "March 2025" -> "2025-03-01"). null if not mentioned or in the past.
-- end_date: Event end date in ISO format YYYY-MM-DD. For one-day events use the SAME date as start_date. For multi-day events use the actual end date. null if not mentioned.
-- speaking_format: You MUST choose exactly ONE from this list (use the exact string): """ + _SPEAKING_FORMATS_STR + """. Pick the one that best matches the event type.
-- delivery_mode: You MUST choose exactly ONE from this list (use the exact string), or empty string if unclear: """ + _DELIVERY_MODE_STR + """
-- target_audiences: Array of audience types. You MUST choose ONLY from this exact list (use the exact strings): """ + _TARGET_AUDIENCES_STR + """. Empty array if none match.
-- application_submission_deadline: Speaker / call-for-speakers application deadline in ISO format YYYY-MM-DD if explicitly stated on the page, otherwise null. Do not guess.
-- application_submission_closed: boolean, true ONLY if the page explicitly states that applications are closed, the deadline has passed, or submissions are no longer accepted; otherwise false.
-- metadata: Object that MUST include "description" (1-2 sentences about the opportunity; use event name or page context if needed). May also include contact email, venue, etc. You may repeat application_submission_deadline or application_submission_closed here if helpful. Never leave description empty.
+                    Exclude:
+                    - Webinars or seminars where users are only attendees
+                    - Events that are strictly attend-only with no speaker participation
+                    - Past events that are already completed
+                    - Internal company events not open to external speakers
 
-Return ONLY valid JSON, no other text. Do not invent or hallucinate - only extract what is explicitly present. Only include events that are in the future.
-If no opportunities are found in this chunk, return []."""
+                    Given a CHUNK of website content (in markdown format), extract only FUTURE speaking opportunities.
 
-    USER_PROMPT_TEMPLATE = """Extract speaking opportunities from this chunk of website content (chunk {chunk_idx} of {total_chunks}):
+                    For each opportunity, return a JSON array of objects with EXACTLY these keys:
 
----
-{content}
----
+                    - link: Source URL if mentioned, otherwise empty string
+                    - event_name: Clear name of the event or opportunity from chunk content, otherwise make one up based on context. 
+                    - location: Event location (city, country, or "Virtual") if mentioned, otherwise empty string
+                    - topics: Array of relevant topics. You MUST choose ONLY from this exact list (use the exact string): """ + _TOPICS_LIST_STR + """. Pick one or more that best match the event. NEVER leave empty - pick at least one from the list.
+                    - start_date: Event start date in ISO format YYYY-MM-DD (e.g. "2025-03-15"). Only include FUTURE events. If only a month/year is known use the first day (e.g. "March 2025" -> "2025-03-01"). null if not mentioned.
+                    - end_date: Event end date in ISO format YYYY-MM-DD. For one-day events use the SAME date as start_date. For multi-day events use the actual end date. null if not mentioned.
+                    - speaking_format: You MUST choose exactly ONE from this list (use the exact string): """ + _SPEAKING_FORMATS_STR + """. Pick the one that best matches the opportunity.
+                    - delivery_mode: You MUST choose exactly ONE from this list (use the exact string), or empty string if unclear: """ + _DELIVERY_MODE_STR + """
+                    - target_audiences: Array of audience types. You MUST choose ONLY from this exact list (use the exact strings): """ + _TARGET_AUDIENCES_STR + """. Empty array if none match.
+                    - application_submission_deadline: Speaker / call-for-speakers application deadline in ISO format YYYY-MM-DD if explicitly stated on the page, otherwise null. Do not guess.
+                    - application_submission_closed: boolean, true ONLY if the page explicitly states that applications are closed, the deadline has passed, or submissions are no longer accepted; otherwise false.
+                    - metadata: Object that MUST include:
+                    - "description": 3-4 sentences describing the opportunity and why it is a speaking opportunity.
+                    - You may also include optional metadata such as contact_email, organizer_name, venue, submission_link, or notes if available.
 
-Return a JSON array of opportunity objects with keys: link, event_name, location, topics, start_date, end_date, speaking_format, delivery_mode, target_audiences, application_submission_deadline, application_submission_closed, metadata.
-- Use start_date and end_date in ISO format (YYYY-MM-DD). For one-day events set end_date equal to start_date. Only include FUTURE events.
-- application_submission_deadline: ISO date or null. application_submission_closed: true/false per page wording only.
-- Use ONLY: topics from """ + _TOPICS_LIST_STR + """; speaking_format from """ + _SPEAKING_FORMATS_STR + """; delivery_mode from """ + _DELIVERY_MODE_STR + """; target_audiences from """ + _TARGET_AUDIENCES_STR + """.
-- Do NOT include webinars or seminars (attend-only). Only opportunities where a speaker can speak.
-- topics must have at least one item. If none found, return []."""
+                    Strict rules:
+                    - Return ONLY valid JSON (no explanations or extra text).
+                    - Do NOT invent or hallucinate information.
+                    - Only extract opportunities explicitly supported by the page content.
+                    - Only include events that are in the future.
+                    - If no opportunities are found in this chunk, return []."""
+
+    USER_PROMPT_TEMPLATE = """Extract speaking opportunities from the following website content.
+
+                    Focus only on opportunities where external professionals, experts, or thought leaders can apply or be invited to speak.
+
+                    Look for signals such as:
+                    - Call for speakers
+                    - Speaker submissions
+                    - Submit a talk or proposal
+                    - Apply to speak
+                    - Become a speaker
+                    - Panelist invitations
+                    - Workshop leader opportunities
+                    - Podcast or media guest invitations
+
+                    Ignore:
+                    - Webinars or seminars meant only for attendees
+                    - Past events that are already completed
+                    - Events that clearly do not accept external speakers
+
+                    Use only the information present in the provided content. Do not guess or hallucinate missing information.
+
+                    Website URL:
+                    {url}
+
+                    Website Content (Markdown Chunk):
+                    {content} 
+                    """
 
     def __init__(self, chunk_size: int = None, chunk_overlap: int = None):
         self.chunk_size = chunk_size or int(os.getenv("LLM_CHUNK_SIZE", "6000"))

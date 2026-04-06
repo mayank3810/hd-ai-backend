@@ -6,7 +6,7 @@ class CommonService:
     def __init__(self):
         self.azure_uploader = AzureBlobUploader()
         
-    async def upload_file(self,file_path,folder_name="strategy-cues-storage",file_type=".png"):
+    async def upload_file(self,file_path,folder_name="hd-ai-storage",file_type=".png"):
         try:
             
             file_url=self.azure_uploader.upload_file_to_azure_blob(file_path,folder_name,file_type)       
