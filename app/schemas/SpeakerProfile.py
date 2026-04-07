@@ -173,6 +173,8 @@ class SpeakerProfileCreateSchema(BaseModel):
     professional_memberships: Optional[List[str]] = Field(default=None, description="Professional memberships or affiliations (array of strings)")
     preferred_speaking_time: Optional[str] = Field(default=None, description="E.g. 10-, 20-, 30-, 40-minute or one hour")
     testimonial: Optional[Union[str, List[str]]] = Field(default=None, description="Testimonials as strings or list of quotes")
+    profile_picture: Optional[str] = Field(default=None, description="URL or path to profile image")
+    headshot_picture: Optional[str] = Field(default=None, description="URL or path to headshot image")
 
     @field_validator("talk_description", mode="before")
     @classmethod
@@ -223,6 +225,8 @@ class SpeakerProfileUpdateSchema(BaseModel):
     professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
     testimonial: Optional[Union[str, List[str]]] = None
+    profile_picture: Optional[str] = None
+    headshot_picture: Optional[str] = None
 
     @field_validator("talk_description", mode="before")
     @classmethod
@@ -270,6 +274,8 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     professional_memberships: Optional[List[str]] = None
     preferred_speaking_time: Optional[str] = None
     testimonial: Optional[Union[str, List[str]]] = None
+    profile_picture: Optional[str] = None
+    headshot_picture: Optional[str] = None
 
     @field_validator("talk_description", mode="before")
     @classmethod

@@ -64,6 +64,21 @@ class UserModel:
             result.append(doc)
         return result
 
+    async def get_all_user_ids_and_full_names(self) -> List[dict]:
+        """
+        Load only _id and fullName from the users collection; return [{"id": "...", "fullName": "..."}] sorted by fullName.
+        """
+        projection = {"_id": 1, "fullName": 1}
+        cursor = self.collection.find({}, projection)
+        docs = await cursor.to_list(length=None)
+        out = [
+            {"id": str(d["_id"]), "fullName": (d.get("fullName") or "").strip()}
+            for d in docs
+            if d and d.get("_id") is not None
+        ]
+        out.sort(key=lambda row: row["fullName"].casefold())
+        return out
+
     async def create_user(self, data: dict) -> PyObjectId:
         """
         Create a new user document in the database.

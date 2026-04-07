@@ -34,6 +34,7 @@ from app.services.SpeakerProfileConversation import (
 )
 from app.dependencies import (
     get_auth_service,
+    get_user_model,
     get_speaker_profile_model,
     get_speaker_topics_model,
     get_speaker_target_audience_model,
@@ -208,6 +209,33 @@ async def get_speaker_profiles_by_user_id(
             )
         profiles = await model.get_profiles_by_user_id(user_id)
         return Utils.create_response(profiles, True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.get("/users/id-and-full-name", response_model=ServerResponse)
+async def list_users_id_and_full_name(
+    jwt_payload: dict = Depends(jwt_validator),
+    user_model=Depends(get_user_model),
+):
+    """
+    Return all users with only id and fullName (Mongo projection: _id + fullName only).
+    The list is not filtered by the caller (same for any authenticated user).
+    """
+    try:
+        token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not token_user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
+            )
+        users = await user_model.get_all_user_ids_and_full_names()
+        return Utils.create_response(users, True)
     except HTTPException:
         raise
     except Exception as e:

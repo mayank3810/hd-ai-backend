@@ -33,7 +33,6 @@ class UpdateUserSchema(BaseModel):
     country: Optional[str] = Field(None, max_length=100)
     zip: Optional[str] = Field(None)
     profilePicture: Optional[str] = None
-    headerProfilePicture: Optional[str] = None
     phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
 
 class AdminUpdateUserSchema(BaseModel):
@@ -53,7 +52,6 @@ class UserSchema(BaseModel):
     country: Optional[str] = Field(None, max_length=100)
     zip: Optional[str] = Field(None)
     profilePicture: Optional[str] = None
-    headerProfilePicture: Optional[str] = None
     phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
     adminId: Optional[str] = None  
     createdOn: datetime = Field(default_factory=datetime.utcnow)
