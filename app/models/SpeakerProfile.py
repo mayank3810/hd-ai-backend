@@ -167,6 +167,15 @@ class SpeakerProfileModel:
             doc["_id"] = str(doc["_id"])
         return doc
 
+    async def delete_profile(self, profile_id: str) -> bool:
+        """Delete speaker profile by id. Returns True if a document was removed."""
+        try:
+            oid = ObjectId(profile_id)
+        except Exception:
+            return False
+        result = await self.collection.delete_one({"_id": oid})
+        return result.deleted_count > 0
+
     async def get_profile_by_id_and_user(self, profile_id: str, user_id: str) -> Optional[dict]:
         """Return profile document by id and user_id, or None if not found."""
         try:

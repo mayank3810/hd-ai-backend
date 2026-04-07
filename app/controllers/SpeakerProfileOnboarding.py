@@ -297,6 +297,57 @@ async def update_speaker_profile(
     return Utils.create_response(updated, True)
 
 
+@router.delete("/delete-speaker-profile/{profile_id}", response_model=ServerResponse)
+async def delete_speaker_profile(
+    profile_id: str,
+    jwt_payload: dict = Depends(jwt_validator),
+    model=Depends(get_speaker_profile_model),
+    chat_session_model=Depends(get_chat_session_model),
+):
+    """
+    Delete a speaker profile by id. Also removes chat sessions tied to that profile.
+    Admins may delete any profile; other users only their own.
+    """
+    try:
+        token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
+        if not token_user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={"data": None, "error": "User ID not found in token.", "success": False},
+            )
+        profile = await model.get_profile(profile_id)
+        if not profile:
+            raise HTTPException(
+                status_code=404,
+                detail={"data": None, "error": "Profile not found.", "success": False},
+            )
+        is_admin = jwt_payload.get("userType") == "admin"
+        owner_id = profile.get("user_id")
+        if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
+            raise HTTPException(
+                status_code=403,
+                detail={"data": None, "error": "You do not have access to this profile.", "success": False},
+            )
+        deleted = await model.delete_profile(profile_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=500,
+                detail={"data": None, "error": "Delete failed.", "success": False},
+            )
+        await chat_session_model.delete_by_speaker_profile_id(profile_id)
+        return Utils.create_response(
+            {"_id": profile_id, "message": "Speaker profile deleted successfully."},
+            True,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
 @router.post("/create-speaker-profile", response_model=ServerResponse, status_code=201)
 async def create_speaker_profile(
     body: SpeakerProfileCreateFormSchema,

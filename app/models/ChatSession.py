@@ -103,3 +103,12 @@ class ChatSessionModel:
                 s["_id"] = str(s["_id"])
         return sessions
 
+    async def delete_by_speaker_profile_id(self, speaker_profile_id: str) -> int:
+        """Remove all chat sessions linked to a speaker profile. Returns deleted count."""
+        if not speaker_profile_id or not str(speaker_profile_id).strip():
+            return 0
+        result = await self.collection.delete_many(
+            {"speaker_profile_id": str(speaker_profile_id).strip()}
+        )
+        return int(result.deleted_count)
+
