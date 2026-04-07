@@ -244,6 +244,10 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     """Form-style payload for creating a new speaker profile without conversational onboarding."""
     full_name: str = Field(..., min_length=2, max_length=50)
     email: EmailStr = Field(...)
+    user_id: Optional[str] = Field(
+        default=None,
+        description="If set, link the profile to this existing user; otherwise a new user is created.",
+    )
     topics: Optional[List[SpeakerTopicItem]] = Field(default=None, min_length=1)
     speaking_formats: Optional[List[str]] = Field(default=None)
     delivery_mode: Optional[List[str]] = Field(default=None)

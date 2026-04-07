@@ -61,6 +61,7 @@ class SpeakerOptionCatalogModel:
         for doc in docs:
             if doc:
                 out.append(self._to_public(doc))
+        out.sort(key=lambda d: (d.get("name") or "").casefold())
         return out
 
     async def get_by_slug(self, slug: str) -> Optional[dict]:

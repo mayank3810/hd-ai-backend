@@ -7,6 +7,8 @@ import os
 import secrets
 from typing import Optional
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postmarker.core import PostmarkClient
 from pydantic import EmailStr, TypeAdapter, ValidationError
@@ -54,7 +56,8 @@ async def _provision_speaker_profile_with_new_user(
     # jwt_actor_id: str,
 ) -> dict:
     """
-    Normalize email/full_name, reject duplicates, create users row + speaker profile,
+    Normalize email/full_name, reject duplicate profile email. If profile_data contains user_id,
+    link to that user (after validation); otherwise create a users row + speaker profile and
     send credentials email (best-effort). Returns inserted profile document.
     """
     email_raw = profile_data.get("email")
@@ -85,11 +88,42 @@ async def _provision_speaker_profile_with_new_user(
 
     profile_data = {**profile_data, "email": email, "full_name": full_name}
 
+    existing_user_id_raw = profile_data.pop("user_id", None)
+    existing_user_id = (
+        str(existing_user_id_raw).strip() if existing_user_id_raw is not None and str(existing_user_id_raw).strip() else None
+    )
+
     if await model.get_profile_by_email(email):
         raise HTTPException(
             status_code=409,
             detail={"data": None, "error": "A speaker profile already exists for this email.", "success": False},
         )
+
+    if existing_user_id:
+        try:
+            oid = ObjectId(existing_user_id)
+        except InvalidId:
+            raise HTTPException(
+                status_code=400,
+                detail={"data": None, "error": "Invalid user_id.", "success": False},
+            )
+        existing_user = await auth_service.user_model.get_user({"_id": oid})
+        if not existing_user:
+            raise HTTPException(
+                status_code=404,
+                detail={"data": None, "error": "No user found for the given user_id.", "success": False},
+            )
+        # if str(existing_user.email).strip().lower() != str(email).strip().lower():
+        #     raise HTTPException(
+        #         status_code=400,
+        #         detail={
+        #             "data": None,
+        #             "error": "email must match the account for the given user_id.",
+        #             "success": False,
+        #         },
+        #     )
+        doc = await model.create_speaker_profile(existing_user_id, profile_data)
+        return doc
 
     if await auth_service.user_model.get_user({"email": email}):
         raise HTTPException(
@@ -272,7 +306,8 @@ async def create_speaker_profile(
 ):
     """
     Create a new speaker profile in one shot using a form-style payload (no conversational AI / stepwise onboarding).
-    Requires email and full_name; provisions a new users account for that email and links the profile to it.
+    Requires email and full_name. If optional user_id is provided, the profile is linked to that user (email must match
+    that account); otherwise a new user is provisioned and the profile is linked to the new id.
     Optional fields are stored when provided.
     """
     # user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
