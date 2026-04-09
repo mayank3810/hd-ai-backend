@@ -807,7 +807,7 @@ The user was asked to share testimonials (quotes or feedback) from past speaking
 
 2) If NOT genuine testimonials, return {{"status":"INVALID","reason_code":"UNRELATED"}} (or "GIBBERISH" for nonsense).
 
-3) If genuine, split into separate strings: each item is one distinct testimonial or quote (merge broken lines of the same quote into one string). At least one non-empty item.
+3) If genuine, split into separate strings: each item is one distinct testimonial quote (merge broken lines of the same quote into one string). At least one non-empty item.
 
 Return JSON ONLY: {{"status":"VALID","reason_code":"OK","items":["..."]}} or INVALID as above.
 """

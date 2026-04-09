@@ -12,7 +12,7 @@ from app.config.speaker_profile_steps import get_next_step
 
 # Profile field names (for updates)
 PROFILE_FIELDS = [
-    "full_name", "email", "topics", "speaking_formats", "delivery_mode", "linkedin_url",
+    "full_name", "professional_title", "company", "email", "topics", "speaking_formats", "delivery_mode", "linkedin_url",
     "past_speaking_examples", "video_links", "talk_description", "key_takeaways", "target_audiences",
     # Editable after creation (not part of verify-step)
     "name_salutation", "bio", "twitter", "facebook", "instagram", "address_city", "address_state", "address_country",

@@ -111,7 +111,7 @@ STEPS: List[StepDefinition] = [
     StepDefinition(
         step_name="key_takeaways",
         form_type="textarea",
-        question="What key takeaways would you like to highlight from your talks?",
+        question="What 3 – 5 key takeaways would you like to highlight from your talk?",
         required=False,
         multi_select=False,
         allowed_values=None,
