@@ -218,7 +218,9 @@ _FIXED_LIST_USER_DEFERS = (
 )
 
 _PROFILE_COMPLETION_MESSAGE = (
-    "Your speaker profile is complete. You may close this window and review your profile. Thank you!"
+    "Your speaker profile has been successfully completed. You may now close this window and review your profile at your convenience."
+    "Upon closing this window, you will receive an email containing your login credentials to access and review your profile online."
+    "Thank you."
 )
 
 # Models often announce "optional fields" to the user; keep onboarding seamless.
@@ -450,7 +452,6 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                     "address_city": {"type": "string"},
                     "address_state": {"type": "string"},
                     "address_country": {"type": "string"},
-                    "phone_country_code": {"type": "string"},
                     "phone_number": {"type": "string"},
                     "professional_memberships": {"type": "array", "items": {"type": "string"}},
                     "preferred_speaking_time": {
@@ -843,7 +844,6 @@ class SpeakerProfileChatbotService:
             "address_city",
             "address_state",
             "address_country",
-            "phone_country_code",
             "phone_number",
         ]:
             v = tool_args.get(k)
@@ -1039,7 +1039,6 @@ class SpeakerProfileChatbotService:
                 "professional_title",
                 "company",
                 "email",
-                "phone_country_code",
                 "phone_number",
                 "address_city",
                 "address_state",
@@ -1242,7 +1241,7 @@ class SpeakerProfileChatbotService:
                 PHASE 2 - Contact (still no profile until Phase 3):
                 Once full_name, professional_title, and company are all known, your next message MUST begin with EXACTLY:
                 Great to have you on board, [full_name]!
-                (Use their professional full_name as they gave it.) Then in the same message ask for BOTH a valid email address AND their phone number (phone_number). You may also collect phone_country_code if they include it.
+                (Use their professional full_name as they gave it.) Then in the same message ask for BOTH a valid email address AND their phone number (phone_number).
 
                 PHASE 3 - Create profile (single tool call):
                 Call upsert_speaker_profile ONLY when you have valid email, phone_number, full_name, professional_title, and company together.
