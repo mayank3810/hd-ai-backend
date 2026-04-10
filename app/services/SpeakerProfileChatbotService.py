@@ -68,8 +68,7 @@ _CHAT_SOCIAL_QUESTION = (
     "(e.g., LinkedIn, Facebook, X, Instagram, etc.)."
 )
 _CHAT_BIO_QUESTION = (
-    "Please share your professional bio—something suitable for an event program "
-    "(a few sentences about your background, expertise, and what you speak about)."
+    "Please share your professional bio in 50 - 100 words."
 )
 _CHAT_SPEAKING_TIME_QUESTION = (
     "What is your preferred speaking time? You can choose one or more from the list below:\n\n"
@@ -105,8 +104,7 @@ _PAST_SPEAKING_CHAT_QUESTION = (
 
 # After professional bio; optional—user may skip; LLM maps free text to structured rows.
 _PROFESSIONAL_MEMBERSHIPS_CHAT_QUESTION = (
-    "Are you part of any professional memberships or associations we should list—for example industry bodies, "
-    "credentials, or boards? Share what feels relevant (organization, your role, and any title if you have one), "
+    "Please share your Professional Memberships, (e.g. Role, Organisation and topics)."
 )
 
 _SOCIAL_URL_FIELD_RULES = (
