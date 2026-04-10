@@ -89,9 +89,24 @@ _PAST_SPEAKING_ITEM_SCHEMA = {
     },
 }
 
+_PROFESSIONAL_MEMBERSHIP_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "Membership or credential title (e.g. Certified Member, Fellow)"},
+        "organization": {"type": "string", "description": "Professional body, association, or organization name"},
+        "role": {"type": "string", "description": "Their role or standing within that membership"},
+    },
+}
+
 # User-facing question only (no field-by-field template); LLM extracts structure for DB.
 _PAST_SPEAKING_CHAT_QUESTION = (
    "Do you have past speaking examples you'd like to share? Please include the organization or event name and the corresponding date (month/year)."
+)
+
+# After professional bio; optional—user may skip; LLM maps free text to structured rows.
+_PROFESSIONAL_MEMBERSHIPS_CHAT_QUESTION = (
+    "Are you part of any professional memberships or associations we should list—for example industry bodies, "
+    "credentials, or boards? Share what feels relevant (organization, your role, and any title if you have one), "
 )
 
 _SOCIAL_URL_FIELD_RULES = (
@@ -179,7 +194,8 @@ _FIXED_LIST_USER_FACING_TRUTH = (
 # LLMs often reuse catalog/off-list wording for optional free-text steps—explicitly forbid that.
 _FREE_TEXT_NON_CATALOG_RULES = (
     "FREE-TEXT FIELDS — NOT A CATALOG (no pick-list, no 'allowed options'): "
-    "bio, talk_description, key_takeaways, professional social URLs (linkedin_url step), past_speaking_examples, video_links, testimonial. "
+    "bio, talk_description, key_takeaways, professional social URLs (linkedin_url step), professional_memberships, "
+    "past_speaking_examples, video_links, testimonial. "
     "FORBIDDEN for these fields: saying the user's words \"aren't on the list\", \"not on the list\", \"off the list\", "
     "\"pick from the list\", \"allowed options\", or any phrasing that implies a predefined menu of choices. "
     "FORBIDDEN: using the OFF-LIST or PARTIAL/MIXED catalog pause for these fields "
@@ -191,7 +207,9 @@ _FREE_TEXT_NON_CATALOG_RULES = (
     "For key_takeaways: if the reply is not genuine takeaway content (e.g. random word 'peanuts', gibberish, unrelated one-liner), "
     "do NOT call upsert_speaker_profile with key_takeaways; do not save it; give one short friendly reply that it doesn't sound like "
     "real takeaways from their talks and re-ask the same key_takeaways question (or offer to skip)—no 'list' language, no continue pause. "
-    "Same idea for talk_description and testimonial when the answer is clearly not on-topic for that question."
+    "Same idea for talk_description, testimonial, and professional_memberships when the answer is clearly not on-topic for that question. "
+    "For professional_memberships: extract title, organization, and role per membership from natural language; "
+    "do not ask users to fill a rigid form or label each key aloud—same spirit as past_speaking_examples."
 )
 
 # Backend may create a users row + credentials email when email is first saved; chat must never disclose that.
@@ -251,6 +269,18 @@ _CONVERSATIONAL_ACK_BEFORE_QUESTION = (
 # Onboarding LLM may only offer catalog rows marked system (plus legacy docs without type).
 _CATALOG_TYPE_FOR_LLM = "system"
 
+# Models may batch catalog saves with later optionals; reinforce one upsert per user answer per catalog step.
+_CATALOG_UPSERT_EACH_USER_TURN = (
+    "CATALOG FIELDS — SAVE ON EVERY ANSWER (CRITICAL): For topics, speaking_formats, delivery_mode, and target_audiences, "
+    "you MUST call upsert_speaker_profile in the SAME assistant turn as the user's message that answers that step. "
+    "Pass speaker_profile_id and ONLY the field(s) for that step (e.g. only topics when they answered the topics question)—"
+    "do not wait until talk_description, key_takeaways, or any later question to persist catalog data. "
+    "Do not accumulate answers across multiple user turns and then save them in one later upsert. "
+    "Exception: if a single user message clearly answers multiple catalog steps at once, you may include all matching fields in one upsert for that message only. "
+    "FORBIDDEN: deferring topics/speaking_formats/delivery_mode/target_audiences saves until after optional fields. "
+    "profile_json updates only after each successful upsert—if you skip the tool on a catalog answer, the next turn still looks empty and breaks flow."
+)
+
 
 def _prompt_option_lines(values: List[str], line_prefix: str = "                ") -> str:
     return "\n".join(f"{line_prefix}{v}  " for v in values)
@@ -303,7 +333,7 @@ def _build_mark_profile_complete_tool(speaker_profile_id: Optional[str] = None) 
     """Tool for LLM to mark profile complete only after ALL questions (required + optional) are asked."""
     desc = (
         "Call this ONLY when you have asked for ALL profile fields in order: "
-        "after profile exists—location (city/state/country), social URLs, professional bio, preferred speaking time (fixed list), "
+        "after profile exists—location (city/state/country), social URLs, professional bio, optional professional memberships, preferred speaking time (fixed list), "
         "then catalog required fields (topics, speaking_formats, delivery_mode, target_audiences), "
         "then talk_description, key_takeaways, past_speaking_examples, video_links, testimonial. "
         "You MUST ask each question; if the user skips or declines where allowed, acknowledge and move on. "
@@ -355,7 +385,9 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
         + " "
         + _SOCIAL_URL_FIELD_RULES
         + " For past_speaking_examples, extract objects with organization_name, optional event_name, and date_month_year only; never ask them to fill a labeled form."
-        + " For topics, speaking_formats, delivery_mode, target_audiences: never tell the user you saved a value unless it is an exact catalog match you passed in this call."
+        + " For professional_memberships, extract objects with title, organization, and role only; same natural-language style as past_speaking_examples."
+        + " For topics, speaking_formats, delivery_mode, target_audiences: call upsert in the same assistant turn as the user's answer for that step; "
+        "do not postpone catalog saves until optional questions. Never tell the user you saved a value unless it is an exact catalog match you passed in this call."
     )
     return {
         "type": "function",
@@ -378,6 +410,7 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Only catalog names from get_allowed_values(value_type='topics'). "
+                            "When the user's latest message answers the topics question, include this in upsert_speaker_profile in THAT same assistant turn—do not defer. "
                             "If the user's wording matches nothing, omit topics entirely; follow OFF-LIST flow (profile sentence + ask to continue)—"
                             "only after they agree, ask speaking_formats with bullets—never re-ask topics in the same turn as the off-list ack. "
                             "If some named topics match the catalog and some do not, pass only matches; use PARTIAL/MIXED flow: "
@@ -390,6 +423,7 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Catalog names from get_allowed_values(value_type='speaking_formats') only. "
+                            "When the user's latest message answers the speaking_formats question, include this in upsert in THAT same turn—do not defer. "
                             "Zero matches → omit field; follow OFF-LIST flow first—only after user confirms continue, ask delivery_mode with bullets. "
                             "Partial match (some formats match, some do not) → save only matches; PARTIAL/MIXED flow before delivery_mode question."
                         ),
@@ -399,6 +433,7 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Catalog names from get_allowed_values(value_type='delivery_mode') only. "
+                            "When the user's latest message answers the delivery_mode question, include this in upsert in THAT same turn—do not defer. "
                             "Zero matches → omit field; follow OFF-LIST flow first—only after user confirms continue, ask target_audiences with bullets. "
                             "Partial match → save only matches; PARTIAL/MIXED flow before target_audiences question."
                         ),
@@ -422,6 +457,7 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                         "items": {"type": "string"},
                         "description": (
                             "Catalog names from get_allowed_values(value_type='target_audiences') only. "
+                            "When the user's latest message answers the target_audiences question, include this in upsert in THAT same turn—do not defer. "
                             "Zero matches → omit field; follow OFF-LIST flow first—only after user confirms continue, ask talk_description (optional flow). "
                             "Partial match → save only matches; PARTIAL/MIXED flow before optional talk_description. "
                             "In user-facing text, never claim you saved a string that you did not pass here as an exact catalog name."
@@ -453,7 +489,14 @@ def _build_upsert_tool(speaker_profile_id_from_session: Optional[str] = None):
                     "address_state": {"type": "string"},
                     "address_country": {"type": "string"},
                     "phone_number": {"type": "string"},
-                    "professional_memberships": {"type": "array", "items": {"type": "string"}},
+                    "professional_memberships": {
+                        "type": "array",
+                        "items": _PROFESSIONAL_MEMBERSHIP_ITEM_SCHEMA,
+                        "description": (
+                            "Optional. One object per membership: title, organization, role (strings). "
+                            "INTERNAL only: extract from free-text user replies; do not read JSON keys aloud."
+                        ),
+                    },
                     "preferred_speaking_time": {
                         "oneOf": [
                             {"type": "string"},
@@ -545,37 +588,47 @@ def _onboarding_checkpoint_for_prompt(profile: dict) -> str:
         )
     elif not social_ok() and not _nonempty_str(profile.get("bio")):
         parts.append(
-            "NEXT_SAVE: social URLs (step B) — ask once; if the user provides URLs, upsert same turn; if they skip with none, proceed to bio and upsert bio when they answer."
+            "NEXT_SAVE: social URLs (step B) — ask once; if the user provides URLs, upsert same turn; if they skip with none, continue to bio (step C)—not loop on B."
         )
     elif not _nonempty_str(profile.get("bio")):
         parts.append(
-            "NEXT_SAVE: bio — when the user sends bio text, you MUST call upsert_speaker_profile with bio in this same assistant turn (tool_calls), not text only."
+            "NEXT_SAVE: bio (step C) — when the user sends bio text, you MUST call upsert_speaker_profile with bio in this same assistant turn (tool_calls), not text only. "
+            "Next in order: optional professional memberships (step D) after bio, then preferred speaking time (step E)."
         )
     elif not _profile_has_preferred_speaking_time(profile):
-        parts.append(
-            "NEXT_SAVE: preferred_speaking_time — when the user picks durations, you MUST call upsert_speaker_profile "
-            f"with preferred_speaking_time as an array from {_PREFERRED_SPEAKING_TIMES} in this same assistant turn."
-        )
+        pm = profile.get("professional_memberships")
+        memberships_saved = isinstance(pm, list) and len(pm) > 0
+        if memberships_saved:
+            parts.append(
+                "NEXT_SAVE: preferred_speaking_time (step E) — when the user picks durations, you MUST call upsert_speaker_profile "
+                f"with preferred_speaking_time as an array from {_PREFERRED_SPEAKING_TIMES} in this same assistant turn."
+            )
+        else:
+            parts.append(
+                "NEXT_SAVE: optional professional memberships (step D, after bio) — ask ONCE if chat history has not already covered it; upsert when they answer or skip without saving junk. "
+                "Then preferred_speaking_time (step E) — when the user picks durations, you MUST call upsert_speaker_profile "
+                f"with preferred_speaking_time as an array from {_PREFERRED_SPEAKING_TIMES} in this same assistant turn."
+            )
     elif not _profile_has_topics(profile):
         parts.append(
-            "NEXT_SAVE: topics — when the user names topics, you MUST call upsert_speaker_profile with topics (catalog matches) in this same assistant turn."
+            "NEXT_SAVE: topics — when the user names topics, you MUST call upsert_speaker_profile in this same assistant turn with topics (catalog matches) only; do not defer to later steps."
         )
     elif not profile.get("speaking_formats"):
         parts.append(
-            "NEXT_SAVE: speaking_formats — upsert valid catalog matches in the same turn as the user's answer."
+            "NEXT_SAVE: speaking_formats — upsert valid catalog matches in the same turn as the user's answer (speaking_formats only); do not batch with other catalog fields from prior turns."
         )
     elif not profile.get("delivery_mode"):
         parts.append(
-            "NEXT_SAVE: delivery_mode — upsert valid catalog matches in the same turn as the user's answer."
+            "NEXT_SAVE: delivery_mode — upsert valid catalog matches in the same turn as the user's answer (delivery_mode only); do not batch with other catalog fields from prior turns."
         )
     elif not profile.get("target_audiences"):
         parts.append(
-            "NEXT_SAVE: target_audiences — upsert valid catalog matches in the same turn as the user's answer."
+            "NEXT_SAVE: target_audiences — upsert valid catalog matches in the same turn as the user's answer (target_audiences only); do not batch with optional fields."
         )
     else:
         parts.append(
-            "NEXT_SAVE: remaining fields (talk_description, key_takeaways, past_speaking_examples, video_links, testimonial) — "
-            "each user answer that adds data MUST include upsert_speaker_profile in that same turn."
+            "NEXT_SAVE: optional chain (talk_description, then key_takeaways, then past_speaking_examples, video_links, testimonial) — "
+            "each user answer MUST trigger upsert_speaker_profile in that same turn for that field; never defer talk_description until key_takeaways or batch multiple optionals in one later upsert."
         )
 
     return "INTERNAL_ONBOARDING_CHECKPOINT (for you only; do not read aloud): " + " ".join(parts)
@@ -634,6 +687,24 @@ def _normalize_past_speaking_examples(raw: Any) -> List[dict]:
                 out.append(row)
         elif isinstance(x, str) and x.strip():
             out.append({"organization_name": x.strip(), "event_name": "", "date_month_year": ""})
+    return out
+
+
+def _normalize_professional_memberships(raw: Any) -> List[dict]:
+    """Coerce tool output to membership dicts: title, organization, role."""
+    out: List[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for x in raw:
+        if isinstance(x, dict):
+            title = str(x.get("title") or "").strip()
+            org = str(x.get("organization") or "").strip()
+            role = str(x.get("role") or "").strip()
+            row = {"title": title, "organization": org, "role": role}
+            if any(row.values()):
+                out.append(row)
+        elif isinstance(x, str) and x.strip():
+            out.append({"title": "", "organization": x.strip(), "role": ""})
     return out
 
 
@@ -853,9 +924,9 @@ class SpeakerProfileChatbotService:
         pst_norm = _normalize_preferred_speaking_times(pst_raw)
         if pst_norm:
             doc["preferred_speaking_time"] = pst_norm
-        pm = tool_args.get("professional_memberships")
-        if isinstance(pm, list):
-            doc["professional_memberships"] = [str(x).strip() for x in pm if x]
+        pm = _normalize_professional_memberships(tool_args.get("professional_memberships"))
+        if pm:
+            doc["professional_memberships"] = pm
         return doc
 
     def _merge_for_update(self, existing: dict, profile_doc: dict) -> dict:
@@ -987,7 +1058,7 @@ class SpeakerProfileChatbotService:
         """
         Flow:
         - Pre-profile: collect full_name, professional_title, company (no DB write), then email + phone, then one upsert creates the profile.
-        - After create: location → social → bio → preferred speaking time → catalog fields → remaining optionals; session stores speaker_profile_id.
+        - After create: location → social → bio → optional memberships → preferred speaking time → catalog fields → remaining optionals; session stores speaker_profile_id.
         """
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -1052,6 +1123,7 @@ class SpeakerProfileChatbotService:
                 "talk_description",
                 "key_takeaways",
                 "linkedin_url",
+                "professional_memberships",
                 "twitter",
                 "facebook",
                 "instagram",
@@ -1093,6 +1165,8 @@ class SpeakerProfileChatbotService:
                 "Always pass speaker_profile_id=\"" + str(speaker_profile_id) + "\". "
                 "Send ONLY the new or updated fields for this turn. "
                 "After each successful upsert, the tool result lists saved_fields—if the user just gave data but saved_fields is empty or warnings say nothing saved, call upsert again with correct arguments before finishing. "
+                + _CATALOG_UPSERT_EACH_USER_TURN
+                + " "
 
                 "CONVERSATION RULES: "
                 "Ask for only ONE new profile field per turn (one main question), optionally preceded by one short ack sentence per CONVERSATIONAL WRAPPER—do not bundle two different fields in one turn. "
@@ -1101,7 +1175,8 @@ class SpeakerProfileChatbotService:
                 "If their answer is PARTIAL/MIXED (some catalog matches plus at least one clear non-catalog item in the SAME user message for that step), save only matches, use the PARTIAL/MIXED flow (confirm + profile note for unmatched + ask to continue)—same pause as off-list; only after they agree, ask the next field. "
                 "If their message is ONLY valid catalog name(s) with nothing else unmatched (e.g. only 'Startups'), that is NOT partial/mixed—acknowledge and ask the next field in the same turn; do not ask 'continue?' or say others aren't on the list. "
                 "If the user evades with an empty or unrelated non-answer, politely ask again. "
-                "If user provides multiple fields at once, extract and save all. "
+                "If the user's SINGLE message clearly contains answers to multiple profile questions at once, extract and save all applicable fields in one upsert for that message. "
+                "Do NOT use that rule to skip upserts on earlier turns: each catalog step (topics, speaking_formats, delivery_mode, target_audiences) still requires upsert_speaker_profile in the same turn as the user's message that answered that step. "
                 "Adapt questions naturally using chat history and profile_json. "
                 "Stay focused ONLY on onboarding. "
                 "Never announce that required fields are done or that you are moving to optional questions—use the CONVERSATIONAL WRAPPER instead of process-speak. "
@@ -1111,7 +1186,7 @@ class SpeakerProfileChatbotService:
                 + " "
 
                 "POST-PROFILE QUESTION ORDER (STRICT—use profile_json to skip steps already filled): "
-                "First complete A–D in order (one main question per turn; location may capture city, state, country together). "
+                "First complete A–E in order (one main question per turn; location may capture city, state, country together). "
                 "A) Location: if any of address_city, address_state, address_country is missing, ask using EXACTLY this text (verbatim): "
                 + repr(_CHAT_LOCATION_QUESTION)
                 + " Then call upsert_speaker_profile with address_city, address_state, address_country parsed from their answer. "
@@ -1122,14 +1197,25 @@ class SpeakerProfileChatbotService:
                 "C) Professional bio: if bio is missing, ask using EXACTLY: "
                 + repr(_CHAT_BIO_QUESTION)
                 + " Do not save gibberish or unrelated one-liners as bio—see FREE-TEXT rules. "
-                "D) Preferred speaking time: if preferred_speaking_time is missing, ask using EXACTLY this full text (including bullets): "
+                "When the user sends bio text, call upsert_speaker_profile with bio in that same assistant turn. "
+                "D) Professional memberships (optional, one question after bio): "
+                "Ask ONCE using EXACTLY: "
+                + repr(_PROFESSIONAL_MEMBERSHIPS_CHAT_QUESTION)
+                + " Only skip asking D if chat history shows you already asked it this session (whether they answered, skipped, or saved rows). "
+                "If profile_json already has professional_memberships with at least one object, do not ask D again. "
+                "After they answer in natural language, call upsert_speaker_profile with professional_memberships as an array of objects "
+                "(title, organization, role)—extract best effort; do not echo those key names to the user. "
+                "If they skip or decline, do NOT re-ask; do NOT save junk—proceed to E. "
+                "E) Preferred speaking time: if preferred_speaking_time is missing, ask using EXACTLY this full text (including bullets): "
                 + repr(_CHAT_SPEAKING_TIME_QUESTION)
                 + " Save only these allowed values via upsert as preferred_speaking_time (array of strings): "
                 + str(_PREFERRED_SPEAKING_TIMES)
                 + ". User may choose one or more. "
 
-                "CATALOG REQUIRED ORDER (after A–D are done or skipped as allowed): "
-                "You MUST collect required fields in EXACT order: topics, speaking_formats, delivery_mode, target_audiences. Then call upsert_speaker_profile with whatever valid catalog matches you got for each step, omitting that field entirely if zero matches. "
+                "CATALOG REQUIRED ORDER (after A–E are done or skipped as allowed): "
+                "You MUST collect required fields in EXACT order: topics, then speaking_formats, then delivery_mode, then target_audiences. "
+                "After EACH step, as soon as the user answers that step (or you complete OFF-LIST / PARTIAL-MIXED save for that step), call upsert_speaker_profile in that SAME assistant turn—typically passing only that step's field. "
+                "Omit that field in the upsert only when zero catalog names matched (OFF-LIST) or when you are in the continue pause; when matches exist, they MUST be in the tool call that same turn—not batched into a later turn with talk_description or key_takeaways. "
 
                 "ALLOWED VALUES for catalog steps come from the database (alphabetical). Current snapshot (use bullet layout below when presenting options to the user):\n"
                 + catalog_allowed_bullets
@@ -1149,9 +1235,10 @@ class SpeakerProfileChatbotService:
                 "or pasting all four categories (topics+formats+delivery+audiences) in one message when only one step is active; or asking them to pick from the list a second time for the step you just closed. "
                 "Allowed and required: when actively asking a catalog step (not an off-list or partial/mixed pause turn), show that step's options as bullet points (see CATALOG CHOICE QUESTIONS). "
                 "Optional: you may offer at most one closest catalog name in a short phrase—without reprinting all options. "
-                "For topics, speaking_formats, delivery_mode, target_audiences ONLY: call upsert_speaker_profile only with valid catalog matches; "
+                "For topics, speaking_formats, delivery_mode, target_audiences ONLY: when there are catalog matches, call upsert_speaker_profile in that same turn with those matches (usually that field alone); "
                 "if none match, omit that field (OFF-LIST flow); if some match and some do not, pass only matches (PARTIAL/MIXED flow); "
-                "in those cases wait for continue before the next field's question. "
+                "in off-list or partial/mixed cases wait for continue before the next field's question. "
+                "Never delay upsert until optional fields—profile_json will stay wrong and you may stack several catalog answers into one tool call later (FORBIDDEN unless one user message supplied them all). "
                 "Do NOT apply this sentence to bio, key_takeaways, or other free-text fields—see FREE-TEXT rules above. "
                 + _FIXED_LIST_USER_DEFERS
                 + " "
@@ -1160,6 +1247,8 @@ class SpeakerProfileChatbotService:
 
                 "REMAINING OPTIONAL FIELDS (after catalog required—one per turn): "
                 "talk_description, key_takeaways, past_speaking_examples, video_links, testimonial (last). "
+                "Do NOT ask professional_memberships again here—it was step D after bio. "
+                "Each of these requires upsert_speaker_profile in the SAME assistant turn as the user's answer for that question—do not defer talk_description until key_takeaways or batch optionals into one tool call. "
                 "For talk_description, ask for their talk or expertise in their own words; after they answer, call upsert_speaker_profile with talk_description as an object {{\"title\": \"...\", \"overview\": \"...\"}} (derive title and overview from their text). "
                 "For key_takeaways, ask using EXACTLY: \"What 3 – 5 key takeaways would you like to highlight from your talk?\" "
                 "Save as key_takeaways: an array of strings (one string per takeaway), or a single string only if they gave one line. "
@@ -1280,6 +1369,7 @@ class SpeakerProfileChatbotService:
                 Fixed Choice Fields (for AFTER profile exists; same session may not need these until the next message)
 
                 Store in upsert_speaker_profile only exact matches from the allowed lists below (system catalog only, type=system).
+                After each catalog answer (topics, formats, delivery, audiences), call upsert_speaker_profile in that same assistant message with that step's field—do not save all catalog fields in one call after optional questions.
                 If the user names something not on the list, omit that field in upsert and use the OFF-LIST flow before the next field—never re-ask topics in the same message as the off-list profile sentence.
                 If they name a mix (some on-list, some not), save only matches and use the PARTIAL/MIXED flow—never ask the next catalog step in that same message.
                 If they name only on-list option(s) and nothing else (e.g. only "Startups"), that is a full match—do NOT use PARTIAL/MIXED, do NOT say other choices "aren't on the list", and do NOT pause on "continue?"—acknowledge and ask the next field.
@@ -1320,7 +1410,7 @@ class SpeakerProfileChatbotService:
 
                 After the profile exists (follow-up messages in this chat session)
 
-                The system will switch to profile-aware instructions. In order you will cover: location (city/state/country), social URLs, professional bio, preferred speaking time (fixed list: {_PREFERRED_SPEAKING_TIMES}), then catalog fields topics/formats/delivery/audiences, then talk description, key takeaways, past speaking examples, video links, and testimonial. Use upsert_speaker_profile with speaker_profile_id from the tool result after create. You cannot call mark_profile_complete until a speaker_profile_id exists and all questions are done.
+                The system will switch to profile-aware instructions. In order you will cover: location (city/state/country), social URLs, professional bio, optional professional memberships (after bio), preferred speaking time (fixed list: {_PREFERRED_SPEAKING_TIMES}), then catalog fields topics/formats/delivery/audiences—call upsert_speaker_profile after EACH catalog answer in that same turn (not batched after optionals), then talk description, key takeaways, past speaking examples, video links, and testimonial (each with upsert in the same turn as the answer). Use upsert_speaker_profile with speaker_profile_id from the tool result after create. You cannot call mark_profile_complete until a speaker_profile_id exists and all questions are done.
 
                 Completion (only in profile-aware turns, after all questions)
 

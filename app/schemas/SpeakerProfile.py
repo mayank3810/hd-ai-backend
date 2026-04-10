@@ -35,6 +35,47 @@ class PastSpeakingExampleItem(BaseModel):
         return data
 
 
+class ProfessionalMembershipItem(BaseModel):
+    """One professional membership or affiliation (stored as JSON objects in MongoDB)."""
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = Field(default="", description="Credential or membership title (e.g. Certified Member)")
+    organization: str = Field(default="", description="Professional body or organization name")
+    role: str = Field(default="", description="Role or standing within that organization")
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_legacy_string(cls, data: Any):
+        if isinstance(data, str):
+            s = data.strip()
+            return {"title": "", "organization": s, "role": ""}
+        return data
+
+
+def _coerce_professional_memberships_value(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, list):
+        out: List[ProfessionalMembershipItem] = []
+        for x in v:
+            if isinstance(x, ProfessionalMembershipItem):
+                out.append(x)
+            elif isinstance(x, dict):
+                out.append(
+                    ProfessionalMembershipItem(
+                        title=str(x.get("title") or "").strip(),
+                        organization=str(x.get("organization") or "").strip(),
+                        role=str(x.get("role") or "").strip(),
+                    )
+                )
+            elif isinstance(x, str) and x.strip():
+                out.append(ProfessionalMembershipItem(organization=x.strip()))
+        # Drop rows that are entirely empty
+        kept = [m for m in out if str(m.title).strip() or str(m.organization).strip() or str(m.role).strip()]
+        return kept or None
+    return v
+
+
 def _coerce_talk_description_value(v: Any) -> Any:
     if v is None:
         return None
@@ -172,7 +213,10 @@ class SpeakerProfileCreateSchema(BaseModel):
     address_country: Optional[str] = Field(default=None, description="Country")
     phone_country_code: Optional[str] = Field(default=None, description="Phone country code (e.g. +1, +44, +91)")
     phone_number: Optional[str] = Field(default=None, description="Phone number (without country code)")
-    professional_memberships: Optional[List[str]] = Field(default=None, description="Professional memberships or affiliations (array of strings)")
+    professional_memberships: Optional[List[ProfessionalMembershipItem]] = Field(
+        default=None,
+        description="Professional memberships: title, organization, and role per row (JSON objects in DB)",
+    )
     preferred_speaking_time: Optional[Union[str, List[str]]] = Field(
         default=None,
         description="One or more of: 10-minute, 20-minute, 30-minute, 40-minute, 1 hour",
@@ -185,6 +229,11 @@ class SpeakerProfileCreateSchema(BaseModel):
     @classmethod
     def _v_talk_description(cls, v: Any) -> Any:
         return _coerce_talk_description_value(v)
+
+    @field_validator("professional_memberships", mode="before")
+    @classmethod
+    def _v_professional_memberships(cls, v: Any) -> Any:
+        return _coerce_professional_memberships_value(v)
 
     @field_validator("key_takeaways", "testimonial", mode="before")
     @classmethod
@@ -241,7 +290,7 @@ class SpeakerProfileUpdateSchema(BaseModel):
     address_country: Optional[str] = None
     phone_country_code: Optional[str] = None
     phone_number: Optional[str] = None
-    professional_memberships: Optional[List[str]] = None
+    professional_memberships: Optional[List[ProfessionalMembershipItem]] = None
     preferred_speaking_time: Optional[Union[str, List[str]]] = None
     testimonial: Optional[Union[str, List[str]]] = None
     profile_picture: Optional[str] = None
@@ -251,6 +300,11 @@ class SpeakerProfileUpdateSchema(BaseModel):
     @classmethod
     def _v_talk_description_u(cls, v: Any) -> Any:
         return _coerce_talk_description_value(v)
+
+    @field_validator("professional_memberships", mode="before")
+    @classmethod
+    def _v_professional_memberships_u(cls, v: Any) -> Any:
+        return _coerce_professional_memberships_value(v)
 
     @field_validator("key_takeaways", "testimonial", mode="before")
     @classmethod
@@ -304,7 +358,7 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     address_country: Optional[str] = None
     phone_country_code: Optional[str] = None
     phone_number: Optional[str] = None
-    professional_memberships: Optional[List[str]] = None
+    professional_memberships: Optional[List[ProfessionalMembershipItem]] = None
     preferred_speaking_time: Optional[Union[str, List[str]]] = None
     testimonial: Optional[Union[str, List[str]]] = None
     profile_picture: Optional[str] = None
@@ -314,6 +368,11 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     @classmethod
     def _v_talk_description_f(cls, v: Any) -> Any:
         return _coerce_talk_description_value(v)
+
+    @field_validator("professional_memberships", mode="before")
+    @classmethod
+    def _v_professional_memberships_f(cls, v: Any) -> Any:
+        return _coerce_professional_memberships_value(v)
 
     @field_validator("key_takeaways", "testimonial", mode="before")
     @classmethod
