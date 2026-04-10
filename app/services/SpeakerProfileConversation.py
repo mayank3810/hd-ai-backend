@@ -273,41 +273,14 @@ def _fallback_recovery(
 
 def generate_chatbot_welcome_message() -> str:
     """
-    Generate welcome message for chatbot-based speaker profile onboarding.
-    Asks for email and name upfront. Uses AI when available, otherwise fallback.
-    MUST include company name "Human Driven AI".
+    Welcome for POST /init-chatbot (same flow as POST /chat first turn).
+    Exact copy for the product; MUST include Human Driven AI and SpeakerPitcher™.
     """
-    fallback_msg = (
-        "Hi! Welcome to Human Driven AI’s Speaker Pitcher™ Agent </br>"
-        "To start your profiles, please provide your name as you would like it to appear professionally (e.g., Jane Doe, MBA, PMP), followed by your  email address. "
+    return (
+        "Hi! Welcome to Human Driven AI's SpeakerPitcher™ Agent."
+        "To start your profiles, please provide your name as you would like it to appear professionally "
+        "(e.g., Jane Doe, MBA, PMP), followed by your title and company."
     )
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return fallback_msg
-
-    client = OpenAI(api_key=api_key)
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert onboarding assistant for Human Driven AI. Write a short welcome message (2-3 lines max) that Reframe the user message without changing meaning of user message."
-                    "Do NOT say 'I am your assistant', 'I'm your helpful assistant', or any phrase that introduces you as an assistant — just welcome them and state what you're here to do.",
-                },
-                {"role": "user", "content": f"Reframe the {fallback_msg} without changing the meaning."},
-            ],
-            temperature=0.7,
-            timeout=10,
-        )
-        msg = (completion.choices[0].message.content or "").strip()
-        if not msg:
-            return fallback_msg
-        if "<br>" not in msg and "\n" in msg:
-            msg = msg.replace("\n", "<br>")
-        return fallback_msg
-    except Exception:
-        return fallback_msg
 
 
 def generate_welcome_message(first_step_question: str) -> str:

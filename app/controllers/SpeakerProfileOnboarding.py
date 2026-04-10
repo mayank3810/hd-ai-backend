@@ -483,7 +483,7 @@ async def init_onboarding():
 async def init_chatbot_onboarding():
     """
     Start chatbot-based speaker profile flow. No input required.
-    Returns welcome message asking for email and name.
+    Returns welcome message asking for professional name, title, and company (same as first /chat turn).
     """
     welcome = generate_chatbot_welcome_message()
     return {"assistant_message": welcome}
@@ -502,7 +502,8 @@ async def speaker_profile_chat(
         "message": "user message as string",
         "chat_session_id": "optional existing chat session id"
       }
-    LLM uses chat history + speaker profile to guide the flow.
+    Flow: name + title + company, then email + phone (profile created), then location, social, bio,
+    preferred speaking time, catalog fields, and remaining questions. See SpeakerProfileChatbotService.process_chat.
     JWT optional: when provided, user_id is linked to the profile.
     """
     user_id = None

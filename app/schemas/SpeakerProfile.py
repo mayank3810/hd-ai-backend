@@ -149,6 +149,8 @@ class VerifyStepInvalidResponse(BaseModel):
 class SpeakerProfileCreateSchema(BaseModel):
     """Full speaker profile payload for POST /speaker-profile."""
     full_name: str = Field(..., min_length=1)
+    professional_title: Optional[str] = Field(default=None, description="Job title as used professionally")
+    company: Optional[str] = Field(default=None, description="Company or organization name")
     email: str = Field(..., min_length=1)
     topics: List[SpeakerTopicItem] = Field(..., min_length=1)  # array of topic objects from speakerTopics
     speaking_formats: List[str] = Field(...)
@@ -171,7 +173,10 @@ class SpeakerProfileCreateSchema(BaseModel):
     phone_country_code: Optional[str] = Field(default=None, description="Phone country code (e.g. +1, +44, +91)")
     phone_number: Optional[str] = Field(default=None, description="Phone number (without country code)")
     professional_memberships: Optional[List[str]] = Field(default=None, description="Professional memberships or affiliations (array of strings)")
-    preferred_speaking_time: Optional[str] = Field(default=None, description="E.g. 10-, 20-, 30-, 40-minute or one hour")
+    preferred_speaking_time: Optional[Union[str, List[str]]] = Field(
+        default=None,
+        description="One or more of: 10-minute, 20-minute, 30-minute, 40-minute, 1 hour",
+    )
     testimonial: Optional[Union[str, List[str]]] = Field(default=None, description="Testimonials as strings or list of quotes")
     profile_picture: Optional[str] = Field(default=None, description="URL or path to profile image")
     headshot_picture: Optional[str] = Field(default=None, description="URL or path to headshot image")
@@ -185,6 +190,18 @@ class SpeakerProfileCreateSchema(BaseModel):
     @classmethod
     def _v_str_list_fields(cls, v: Any) -> Any:
         return _coerce_string_list_field(v)
+
+    @field_validator("preferred_speaking_time", mode="before")
+    @classmethod
+    def _v_preferred_speaking_time(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, list):
+            out = [str(x).strip() for x in v if str(x).strip()]
+            return out or None
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return v
 
     @model_validator(mode="after")
     def _require_talk_description_nonempty(self) -> "SpeakerProfileCreateSchema":
@@ -202,6 +219,8 @@ class SpeakerProfileCreateSchema(BaseModel):
 class SpeakerProfileUpdateSchema(BaseModel):
     """Request body for PUT /speaker-profile/{profile_id}. All fields optional; only provided fields are updated."""
     full_name: Optional[str] = Field(default=None, min_length=1)
+    professional_title: Optional[str] = None
+    company: Optional[str] = None
     email: Optional[str] = Field(default=None, min_length=1)
     topics: Optional[List[SpeakerTopicItem]] = Field(default=None, min_length=1)
     speaking_formats: Optional[List[str]] = Field(default=None)
@@ -223,7 +242,7 @@ class SpeakerProfileUpdateSchema(BaseModel):
     phone_country_code: Optional[str] = None
     phone_number: Optional[str] = None
     professional_memberships: Optional[List[str]] = None
-    preferred_speaking_time: Optional[str] = None
+    preferred_speaking_time: Optional[Union[str, List[str]]] = None
     testimonial: Optional[Union[str, List[str]]] = None
     profile_picture: Optional[str] = None
     headshot_picture: Optional[str] = None
@@ -238,6 +257,18 @@ class SpeakerProfileUpdateSchema(BaseModel):
     def _v_str_list_fields_u(cls, v: Any) -> Any:
         return _coerce_string_list_field(v)
 
+    @field_validator("preferred_speaking_time", mode="before")
+    @classmethod
+    def _v_preferred_speaking_time_u(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, list):
+            out = [str(x).strip() for x in v if str(x).strip()]
+            return out or None
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return v
+
     class Config:
         populate_by_name = True
 
@@ -247,6 +278,8 @@ class SpeakerProfileUpdateSchema(BaseModel):
 class SpeakerProfileCreateFormSchema(BaseModel):
     """Form-style payload for creating a new speaker profile without conversational onboarding."""
     full_name: str = Field(..., min_length=2, max_length=50)
+    professional_title: Optional[str] = None
+    company: Optional[str] = None
     email: EmailStr = Field(...)
     user_id: Optional[str] = Field(
         default=None,
@@ -272,7 +305,7 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     phone_country_code: Optional[str] = None
     phone_number: Optional[str] = None
     professional_memberships: Optional[List[str]] = None
-    preferred_speaking_time: Optional[str] = None
+    preferred_speaking_time: Optional[Union[str, List[str]]] = None
     testimonial: Optional[Union[str, List[str]]] = None
     profile_picture: Optional[str] = None
     headshot_picture: Optional[str] = None
@@ -286,6 +319,18 @@ class SpeakerProfileCreateFormSchema(BaseModel):
     @classmethod
     def _v_str_list_fields_f(cls, v: Any) -> Any:
         return _coerce_string_list_field(v)
+
+    @field_validator("preferred_speaking_time", mode="before")
+    @classmethod
+    def _v_preferred_speaking_time_f(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, list):
+            out = [str(x).strip() for x in v if str(x).strip()]
+            return out or None
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return v
 
     class Config:
         populate_by_name = True
