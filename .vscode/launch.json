@@ -5,6 +5,7 @@
       "name": "Debug HD AI",
       "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "module": "uvicorn",
             "args": [
                 "app.main:app",

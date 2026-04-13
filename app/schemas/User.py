@@ -6,6 +6,7 @@ from enum import Enum
 from app.schemas.PyObjectId import PyObjectId
 
 class UserType(str, Enum):
+    SUPER_ADMIN = "super_admin"
     ADMIN = "admin"
     USER = "user"
 

@@ -10,6 +10,22 @@ from pymongo import ReturnDocument
 from app.helpers.Database import MongoDB
 from app.config.speaker_profile_steps import get_next_step
 
+
+def _user_id_query_filter(user_id: Optional[str]) -> dict:
+    """
+    Match speaker_profiles where user_id equals the given id as stored either as a string
+    or as ObjectId (legacy / mixed data).
+    """
+    uid = (user_id or "").strip()
+    if not uid:
+        return {"_id": {"$in": []}}  # matches nothing
+    try:
+        oid = ObjectId(uid)
+        return {"$or": [{"user_id": uid}, {"user_id": oid}]}
+    except Exception:
+        return {"user_id": uid}
+
+
 # Profile field names (for updates)
 PROFILE_FIELDS = [
     "full_name", "professional_title", "company", "email", "topics", "speaking_formats", "delivery_mode", "linkedin_url",
@@ -207,13 +223,52 @@ class SpeakerProfileModel:
         return docs
 
     async def get_profiles_by_user_id(self, user_id: str) -> List[dict]:
-        """Return all speaker profiles for the given user_id, newest first."""
-        cursor = self.collection.find({"user_id": user_id}).sort("createdAt", -1)
+        """Return all speaker profiles for the given user_id, newest first (no limit)."""
+        uid = (user_id or "").strip()
+        if not uid:
+            return []
+        cursor = self.collection.find(_user_id_query_filter(uid)).sort("createdAt", -1)
         docs = await cursor.to_list(length=None)
         for doc in docs:
             if doc and "_id" in doc:
                 doc["_id"] = str(doc["_id"])
         return docs
+
+    async def get_profiles_by_user_ids(
+        self, user_ids: List[str]
+    ) -> Dict[str, List[dict]]:
+        """
+        Return speaker profiles grouped by user_id (newest first within each group).
+        Skips empty/None ids. Users with no profiles are omitted from the dict.
+        """
+        ids = [str(uid).strip() for uid in user_ids if uid and str(uid).strip()]
+        if not ids:
+            return {}
+        in_values: List[Any] = []
+        for u in ids:
+            in_values.append(u)
+            try:
+                in_values.append(ObjectId(u))
+            except Exception:
+                pass
+        cursor = self.collection.find({"user_id": {"$in": in_values}})
+        docs = await cursor.to_list(length=None)
+        grouped: Dict[str, List[dict]] = {}
+        for doc in docs:
+            if not doc:
+                continue
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            uid = doc.get("user_id")
+            if uid is None:
+                continue
+            grouped.setdefault(str(uid), []).append(doc)
+        for uid, lst in grouped.items():
+            lst.sort(
+                key=lambda d: d.get("createdAt") or datetime.min,
+                reverse=True,
+            )
+        return grouped
 
     async def create_speaker_profile(self, user_id: str, profile_data: dict) -> dict:
         """

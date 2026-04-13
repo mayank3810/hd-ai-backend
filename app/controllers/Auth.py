@@ -7,6 +7,7 @@ from app.schemas.ServerResponse import ServerResponse
 from app.schemas.User import GetUserSchema, UserSchema, CreateUserSchema, ForgotPasswordRequest, AdminUpdateUserSchema, AdminCreateUserSchema
 from app.helpers.Utilities import Utils
 from app.dependencies import get_auth_service
+from app.helpers.auth_roles import is_admin_role
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Auth"])
     
@@ -96,7 +97,7 @@ async def get_users_by_admin(
         
         # Verify the user making request is an admin
         admin_user_type = jwt_payload.get("userType")
-        if admin_user_type != "admin":
+        if not is_admin_role(admin_user_type):
             raise HTTPException(
                 status_code=403,
                 detail={"data": None, "error": "Only admins can access this resource", "success": False}
@@ -131,7 +132,7 @@ async def create_user_by_admin(
         
         # Verify the user making request is an admin
         admin_user_type = jwt_payload.get("userType")
-        if admin_user_type != "admin":
+        if not is_admin_role(admin_user_type):
             raise HTTPException(
                 status_code=403,
                 detail={"data": None, "error": "Only admins can create users", "success": False}
@@ -167,7 +168,7 @@ async def get_user_by_id(
         
         # Verify the user making request is an admin
         admin_user_type = jwt_payload.get("userType")
-        if admin_user_type != "admin":
+        if not is_admin_role(admin_user_type):
             raise HTTPException(
                 status_code=403,
                 detail={"data": None, "error": "Only admins can access this resource", "success": False}

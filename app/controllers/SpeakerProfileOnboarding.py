@@ -14,6 +14,7 @@ from postmarker.core import PostmarkClient
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from app.config.speaker_profile_steps import get_first_step, get_next_step, get_step_by_name, is_last_step, step_to_response
+from app.helpers.auth_roles import is_admin_role
 from app.middleware.JWTVerification import jwt_validator
 from app.models.SpeakerProfile import PROFILE_FIELDS
 from app.schemas.SpeakerProfile import (
@@ -170,7 +171,7 @@ async def get_my_speaker_profiles(
                 status_code=401,
                 detail={"data": None, "error": "User ID not found in token.", "success": False},
             )
-        if jwt_payload.get("userType") == "admin":
+        if is_admin_role(jwt_payload.get("userType")):
             profiles = await model.get_all_profiles()
         else:
             profiles = await model.get_profiles_by_user_id(str(token_user_id))
@@ -191,17 +192,23 @@ async def get_speaker_profiles_by_user_id(
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Get speaker profiles for a given user. Authenticated users may only request their own user_id;
-    admins may request any user_id. Returns a list (newest first); empty list if none.
+    Return every speaker profile linked to the given user (newest first; not paginated).
+    Authenticated users may only request their own user_id; admins may request any user_id.
     """
     try:
+        user_id = (user_id or "").strip()
+        if not user_id:
+            raise HTTPException(
+                status_code=400,
+                detail={"data": None, "error": "user_id is required.", "success": False},
+            )
         token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
         if not token_user_id:
             raise HTTPException(
                 status_code=401,
                 detail={"data": None, "error": "User ID not found in token.", "success": False},
             )
-        is_admin = jwt_payload.get("userType") == "admin"
+        is_admin = is_admin_role(jwt_payload.get("userType"))
         if not is_admin and str(token_user_id) != str(user_id):
             raise HTTPException(
                 status_code=403,
@@ -267,7 +274,7 @@ async def get_speaker_profile_by_id(
                 status_code=404,
                 detail={"data": None, "error": "Profile not found.", "success": False},
             )
-        is_admin = jwt_payload.get("userType") == "admin"
+        is_admin = is_admin_role(jwt_payload.get("userType"))
         owner_id = profile.get("user_id")
         if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
             raise HTTPException(
@@ -306,7 +313,7 @@ async def update_speaker_profile(
             status_code=404,
             detail={"data": None, "error": "Profile not found.", "success": False},
         )
-    is_admin = jwt_payload.get("userType") == "admin"
+    is_admin = is_admin_role(jwt_payload.get("userType"))
     owner_id = profile.get("user_id")
     if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
         raise HTTPException(
@@ -349,7 +356,7 @@ async def delete_speaker_profile(
                 status_code=404,
                 detail={"data": None, "error": "Profile not found.", "success": False},
             )
-        is_admin = jwt_payload.get("userType") == "admin"
+        is_admin = is_admin_role(jwt_payload.get("userType"))
         owner_id = profile.get("user_id")
         if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
             raise HTTPException(
@@ -431,7 +438,7 @@ async def resume_onboarding(
             status_code=404,
             detail={"data": None, "error": "Profile not found.", "success": False},
         )
-    is_admin = jwt_payload.get("userType") == "admin"
+    is_admin = is_admin_role(jwt_payload.get("userType"))
     owner_id = profile.get("user_id")
     if not is_admin and (owner_id is None or str(owner_id) != str(token_user_id)):
         raise HTTPException(

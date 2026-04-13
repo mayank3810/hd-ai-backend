@@ -6,6 +6,7 @@ from typing import Optional
 
 # Global singletons - Services
 _auth_service = None
+_user_management_service = None
 _property_service = None
 _filter_preset_service = None
 _export_service = None
@@ -53,6 +54,15 @@ def get_auth_service():
         from app.services.Auth import AuthService
         _auth_service = AuthService()
     return _auth_service
+
+
+def get_user_management_service():
+    """Get singleton UserManagementService instance"""
+    global _user_management_service
+    if _user_management_service is None:
+        from app.services.UserManagement import UserManagementService
+        _user_management_service = UserManagementService()
+    return _user_management_service
 
 
 def get_profile_service():
@@ -214,10 +224,11 @@ def cleanup_resources():
     global _background_mapping_service, _image_caption_service, _booking_service, _airbnb_service
     global _image_analysis_helper, _temporary_competitor_service, _deployment_cues_service
     global _image_analysis_helper, _temporary_competitor_service, _cue_properties_service
-    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _delivery_modes_model, _speaking_formats_model, _chat_session_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _google_query_scraper_service, _opportunity_service, _matched_opportunities_email_service
+    global _onboarding_status_service, _queue_status_service, _analytics_cues_preset_service, _excel_schedule_service, _speaker_profile_model, _speaker_topics_model, _speaker_target_audience_model, _delivery_modes_model, _speaking_formats_model, _chat_session_model, _speaker_profile_chatbot_service, _scraper_service, _url_scraper_rapidapi_service, _google_query_scraper_service, _opportunity_service, _matched_opportunities_email_service, _user_management_service
 
     # Reset all services
     _auth_service = None
+    _user_management_service = None
     _property_service = None
     _filter_preset_service = None
     _export_service = None
