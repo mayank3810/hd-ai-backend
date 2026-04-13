@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.schemas.User import UserType
 
@@ -54,3 +54,28 @@ class UsersListPagination(BaseModel):
 class UsersWithProfilesListData(BaseModel):
     users: List[UserWithSpeakerProfiles]
     pagination: UsersListPagination
+
+
+class AddSpeakerProfileForUserBody(BaseModel):
+    """Admin: create a new onboarding-style speaker profile for a user."""
+
+    full_name: str = Field(..., min_length=1, max_length=200, description="Initial display name (full_name step).")
+
+
+class LinkSpeakerProfilesToUserBody(BaseModel):
+    """Admin: set user_id on existing speaker profile documents (reassigns if they belonged to another user)."""
+
+    speaker_profile_ids: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="MongoDB _id values of speaker_profiles to attach to this user.",
+    )
+
+    @field_validator("speaker_profile_ids")
+    @classmethod
+    def strip_ids(cls, v: List[str]) -> List[str]:
+        out = [str(x).strip() for x in v if x is not None and str(x).strip()]
+        if not out:
+            raise ValueError("speaker_profile_ids must contain at least one non-empty id")
+        return out

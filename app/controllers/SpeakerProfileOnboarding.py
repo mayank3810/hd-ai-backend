@@ -158,11 +158,16 @@ async def _provision_speaker_profile_with_new_user(
 
 @router.get("/get-speaker-profiles", response_model=ServerResponse)
 async def get_my_speaker_profiles(
+    user_id: Optional[str] = Query(
+        None,
+        description="If set, return speaker profiles for this user (must match the logged-in user or caller must be admin).",
+    ),
     jwt_payload: dict = Depends(jwt_validator),
     model=Depends(get_speaker_profile_model),
 ):
     """
-    Admins: all speaker profiles. Other users: their own profiles only (newest first).
+    Without user_id: admins get all profiles; other users get their own (newest first).
+    With user_id: returns all profiles linked to that user; non-admins may only pass their own id.
     """
     try:
         token_user_id = jwt_payload.get("id") or jwt_payload.get("user_id")
@@ -171,6 +176,21 @@ async def get_my_speaker_profiles(
                 status_code=401,
                 detail={"data": None, "error": "User ID not found in token.", "success": False},
             )
+        if user_id is not None:
+            uid = (user_id or "").strip()
+            if not uid:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"data": None, "error": "user_id cannot be empty.", "success": False},
+                )
+            is_admin = is_admin_role(jwt_payload.get("userType"))
+            if not is_admin and str(token_user_id) != str(uid):
+                raise HTTPException(
+                    status_code=403,
+                    detail={"data": None, "error": "You can only access your own speaker profiles.", "success": False},
+                )
+            profiles = await model.get_profiles_by_user_id(uid)
+            return Utils.create_response(profiles, True)
         if is_admin_role(jwt_payload.get("userType")):
             profiles = await model.get_all_profiles()
         else:

@@ -503,8 +503,8 @@ class AuthService:
                     "error": "User with this email already exists."
                 }
 
-            # Prepare user data
-            user_data_dict = user_data.dict()
+            # Prepare user data (do not persist speaker_profile_ids on the user document)
+            user_data_dict = user_data.model_dump(exclude={"speaker_profile_ids"})
             
             # Hash password
             hashed_password = Utils.hash_password(user_data.password)
@@ -534,13 +534,22 @@ class AuthService:
                 "adminId": admin_id,
                 "createdOn": current_time
             }
-            
+            data_out = {
+                "user": response_data,
+                "message": "User created successfully",
+            }
+            profile_ids = user_data.speaker_profile_ids
+            if profile_ids:
+                from app.models.SpeakerProfile import SpeakerProfileModel
+
+                link = await SpeakerProfileModel().assign_profiles_to_user(
+                    profile_ids, str(user_id)
+                )
+                data_out["speakerProfilesLinked"] = link
+
             return {
                 "success": True,
-                "data": {
-                    "user": response_data,
-                    "message": "User created successfully"
-                }
+                "data": data_out,
             }
         
         except ValidationError as e:

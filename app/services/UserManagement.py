@@ -7,6 +7,8 @@ from app.models.SpeakerProfile import SpeakerProfileModel
 from app.models.User import UserModel
 from app.schemas.User import AdminCreateUserSchema, AdminUpdateUserSchema, UserSchema
 from app.schemas.UserManagement import (
+    AddSpeakerProfileForUserBody,
+    LinkSpeakerProfilesToUserBody,
     SpeakerProfileSummary,
     UserPublic,
     UserWithSpeakerProfiles,
@@ -181,3 +183,121 @@ class UserManagementService:
 
     async def delete_user(self, user_id: str) -> Dict[str, Any]:
         return await self._auth().delete_user(user_id)
+
+    async def add_speaker_profile_for_user(
+        self, user_id: str, body: AddSpeakerProfileForUserBody
+    ) -> Dict[str, Any]:
+        try:
+            try:
+                uid = ObjectId(user_id)
+            except Exception:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found",
+                }
+            user = await self.user_model.get_user({"_id": uid})
+            if not user:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found",
+                }
+            name = body.full_name.strip()
+            if not name:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "full_name is required.",
+                }
+            doc = await self.profile_model.create_profile(name, user_id=str(user_id))
+            pid = str(doc["_id"])
+            prof = await self.profile_model.get_profile(pid)
+            if not prof:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "Profile was created but could not be loaded.",
+                }
+            summary = _profile_to_summary(prof)
+            return {
+                "success": True,
+                "data": {"profile": summary.model_dump(mode="json")},
+                "error": None,
+            }
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def link_speaker_profiles_to_user(
+        self, user_id: str, body: LinkSpeakerProfilesToUserBody
+    ) -> Dict[str, Any]:
+        """Set user_id on existing profiles to this user (same as create-user linking)."""
+        try:
+            try:
+                uid = ObjectId(user_id)
+            except Exception:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found",
+                }
+            user = await self.user_model.get_user({"_id": uid})
+            if not user:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found",
+                }
+            link = await self.profile_model.assign_profiles_to_user(
+                body.speaker_profile_ids, str(user_id)
+            )
+            return {
+                "success": True,
+                "data": {
+                    "speakerProfilesLinked": link,
+                    "userId": str(user_id).strip(),
+                },
+                "error": None,
+            }
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}
+
+    async def delete_speaker_profile_for_user(
+        self, user_id: str, profile_id: str
+    ) -> Dict[str, Any]:
+        try:
+            try:
+                ObjectId(user_id)
+            except Exception:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found",
+                }
+            user = await self.user_model.get_user({"_id": ObjectId(user_id)})
+            if not user:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "User not found",
+                }
+            deleted = await self.profile_model.delete_profile_for_user(
+                profile_id, user_id
+            )
+            if not deleted:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": "Speaker profile not found or not owned by this user.",
+                }
+            return {
+                "success": True,
+                "data": {
+                    "deleted": True,
+                    "profileId": str(profile_id).strip(),
+                    "userId": str(user_id).strip(),
+                },
+                "error": None,
+            }
+        except Exception as e:
+            return {"success": False, "data": None, "error": str(e)}

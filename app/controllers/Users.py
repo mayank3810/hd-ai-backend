@@ -9,6 +9,10 @@ from app.helpers.Utilities import Utils
 from app.middleware.JWTVerification import jwt_validator
 from app.schemas.ServerResponse import ServerResponse
 from app.schemas.User import AdminCreateUserSchema, AdminUpdateUserSchema
+from app.schemas.UserManagement import (
+    AddSpeakerProfileForUserBody,
+    LinkSpeakerProfilesToUserBody,
+)
 
 router = APIRouter(prefix="/api/v1/users", tags=["Users"])
 
@@ -54,6 +58,119 @@ async def list_users_with_profiles(
         if not data["success"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "data": None,
+                    "error": data.get("error", ""),
+                    "success": False,
+                },
+            )
+        return Utils.create_response(data["data"], True, "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.post(
+    "/{user_id}/speaker-profiles",
+    response_model=ServerResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_speaker_profile_for_user(
+    user_id: str,
+    body: AddSpeakerProfileForUserBody,
+    service=Depends(get_user_management_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """Create a new speaker profile for the user (onboarding-style: full_name + progress fields)."""
+    _require_admin(jwt_payload)
+    try:
+        data = await service.add_speaker_profile_for_user(user_id, body)
+        if not data["success"]:
+            code = (
+                status.HTTP_404_NOT_FOUND
+                if data.get("error") == "User not found"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=code,
+                detail={
+                    "data": None,
+                    "error": data.get("error", ""),
+                    "success": False,
+                },
+            )
+        return Utils.create_response(data["data"], True, "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.delete("/{user_id}/speaker-profiles/{profile_id}", response_model=ServerResponse)
+async def delete_speaker_profile_for_user(
+    user_id: str,
+    profile_id: str,
+    service=Depends(get_user_management_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """Delete a speaker profile that belongs to this user."""
+    _require_admin(jwt_payload)
+    try:
+        data = await service.delete_speaker_profile_for_user(user_id, profile_id)
+        if not data["success"]:
+            err = data.get("error", "")
+            code = (
+                status.HTTP_404_NOT_FOUND
+                if "not found" in err.lower() or "not owned" in err.lower()
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=code,
+                detail={
+                    "data": None,
+                    "error": err,
+                    "success": False,
+                },
+            )
+        return Utils.create_response(data["data"], True, "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"data": None, "error": str(e), "success": False},
+        )
+
+
+@router.post("/{user_id}/link-speaker-profiles", response_model=ServerResponse)
+async def link_speaker_profiles_to_user(
+    user_id: str,
+    body: LinkSpeakerProfilesToUserBody,
+    service=Depends(get_user_management_service),
+    jwt_payload: dict = Depends(jwt_validator),
+):
+    """
+    Set user_id on existing speaker profile documents to this user.
+    Profiles may be reassigned from another user (same behavior as speaker_profile_ids on create user).
+    """
+    _require_admin(jwt_payload)
+    try:
+        data = await service.link_speaker_profiles_to_user(user_id, body)
+        if not data["success"]:
+            code = (
+                status.HTTP_404_NOT_FOUND
+                if data.get("error") == "User not found"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=code,
                 detail={
                     "data": None,
                     "error": data.get("error", ""),

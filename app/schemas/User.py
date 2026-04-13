@@ -22,6 +22,10 @@ class AdminCreateUserSchema(BaseModel):
     email: EmailStr = Field(...)
     phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
     password: str = Field(..., min_length=8)
+    speaker_profile_ids: Optional[List[str]] = Field(
+        None,
+        description="Existing speaker profile document ids to assign to the new user (sets user_id on those profiles).",
+    )
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr

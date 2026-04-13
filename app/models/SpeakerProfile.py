@@ -193,6 +193,29 @@ class SpeakerProfileModel:
         result = await self.collection.delete_one({"_id": oid})
         return result.deleted_count > 0
 
+    async def delete_profile_for_user(self, profile_id: str, user_id: str) -> bool:
+        """
+        Delete a speaker profile only if it exists and its user_id matches the given user
+        (compares string forms so string/ObjectId storage both match).
+        """
+        uid = (user_id or "").strip()
+        if not uid:
+            return False
+        try:
+            oid = ObjectId(profile_id)
+        except Exception:
+            return False
+        doc = await self.collection.find_one({"_id": oid})
+        if not doc:
+            return False
+        owner = doc.get("user_id")
+        if owner is None:
+            return False
+        if str(owner) != uid:
+            return False
+        result = await self.collection.delete_one({"_id": oid})
+        return result.deleted_count > 0
+
     async def get_profile_by_id_and_user(self, profile_id: str, user_id: str) -> Optional[dict]:
         """Return profile document by id and user_id, or None if not found."""
         try:
@@ -221,6 +244,36 @@ class SpeakerProfileModel:
             if doc and "_id" in doc:
                 doc["_id"] = str(doc["_id"])
         return docs
+
+    async def assign_profiles_to_user(
+        self, profile_ids: List[str], user_id: str
+    ) -> Dict[str, int]:
+        """
+        Set user_id on existing speaker_profiles matched by _id.
+        Returns matched_count and modified_count from update_many.
+        """
+        uid = str(user_id).strip()
+        if not uid or not profile_ids:
+            return {"matched": 0, "modified": 0}
+        oids: List[ObjectId] = []
+        for pid in profile_ids:
+            if not pid or not str(pid).strip():
+                continue
+            try:
+                oids.append(ObjectId(str(pid).strip()))
+            except Exception:
+                continue
+        if not oids:
+            return {"matched": 0, "modified": 0}
+        now = datetime.utcnow()
+        result = await self.collection.update_many(
+            {"_id": {"$in": oids}},
+            {"$set": {"user_id": uid, "updatedAt": now}},
+        )
+        return {
+            "matched": result.matched_count,
+            "modified": result.modified_count,
+        }
 
     async def get_profiles_by_user_id(self, user_id: str) -> List[dict]:
         """Return all speaker profiles for the given user_id, newest first (no limit)."""
