@@ -58,7 +58,8 @@ class UserSchema(BaseModel):
     zip: Optional[str] = Field(None)
     profilePicture: Optional[str] = None
     phone: Optional[str] = Field(None, pattern=r'^\+?1?\d{9,15}$')
-    adminId: Optional[str] = None  
+    adminId: Optional[str] = None
+    stripe_customer_id: Optional[str] = None
     createdOn: datetime = Field(default_factory=datetime.utcnow)
     updatedOn: Optional[datetime] = None
 

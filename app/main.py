@@ -12,6 +12,8 @@ from app.middleware.GlobalErrorHandling import GlobalErrorHandlingMiddleware
 from app.controllers import Auth, Profile, Common
 from app.middleware.JWTVerification import jwt_validator
 from app.controllers import SpeakerProfileOnboarding, SpeakerOptions, Scraper, UrlScraperRapidAPI, GoogleQueryScraper, Opportunity, Dashboard, Users
+from app.controllers import Subscriptions
+from app.services.Subscriptions import init_stripe_from_env
 from app.dependencies import get_url_scraper_rapidapi_service
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -54,6 +56,8 @@ app.include_router(GoogleQueryScraper.router, dependencies=[Depends(jwt_validato
 app.include_router(Opportunity.router, dependencies=[Depends(jwt_validator)])
 app.include_router(Dashboard.router, dependencies=[Depends(jwt_validator)])
 app.include_router(Users.router, dependencies=[Depends(jwt_validator)])
+app.include_router(Subscriptions.public_router)
+app.include_router(Subscriptions.auth_router, dependencies=[Depends(jwt_validator)])
 
 
 @app.on_event("startup")
@@ -62,6 +66,7 @@ async def startup_event():
     # Connect async MongoDB (Motor)
     MongoDB.connect(connection_string)
     print("MongoDB connected (async with Motor)")
+    init_stripe_from_env()
 
     # # TedX cron: every 1 min for testing (max_instances=1 skips if already running)
     # service = get_url_scraper_rapidapi_service()

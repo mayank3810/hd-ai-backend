@@ -47,3 +47,4 @@ APScheduler==3.10.4
 pinecone>=5.0.0
 langchain-openai>=0.2.0
 langchain-core>=0.3.0
+stripe>=11.0.0
