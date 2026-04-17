@@ -1,0 +1,459 @@
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, List, Optional, Tuple
+
+import stripe
+
+from app.config.stripe import ProductConfig, StripeSettings, get_products
+from app.helpers.SubscriptionStripeUtil import (
+    as_dict,
+    compute_subscription_fields,
+    get_subscription_entitlements,
+    plan_product_id_from_subscription,
+    process_mongo_subscriptions_for_api,
+    select_primary_subscription,
+    stripe_timestamp_to_iso,
+    subscription_timestamp_iso_fields,
+    tier_from_stripe_product_id,
+    user_doc_for_stripe,
+    user_set_stripe_customer_id,
+)
+from app.helpers.SubscriptionStripeWebhooks import handle_raw_webhook
+from app.models.Subscriptions import SubscriptionsModel
+from app.models.User import UserModel
+from app.schemas.Subscriptions import PaymentLinkResult
+
+logger = logging.getLogger(__name__)
+
+
+def _recurring_interval_on_price(price_obj: Any) -> Optional[str]:
+    rec = getattr(price_obj, "recurring", None)
+    if rec is None and isinstance(price_obj, dict):
+        rec = price_obj.get("recurring")
+    if not rec:
+        return None
+    return getattr(rec, "interval", None) if not isinstance(rec, dict) else rec.get("interval")
+
+
+def _resolve_price_id_for_product(stripe_product_id: str) -> str:
+    prices = stripe.Price.list(product=stripe_product_id, active=True, limit=100)
+    if not prices.data:
+        raise ValueError(f"No active price found for product {stripe_product_id}")
+    monthly = next(
+        (p for p in prices.data if _recurring_interval_on_price(p) == "month"),
+        None,
+    )
+    chosen = monthly or prices.data[0]
+    return str(chosen.id)
+
+
+def _list_subscriptions_for_customer(
+    stripe_customer_id: str,
+    *,
+    status: Optional[str] = None,
+    limit: int = 10,
+) -> List[Any]:
+    params: dict[str, Any] = {"customer": stripe_customer_id, "limit": limit}
+    if status:
+        params["status"] = status
+    result = stripe.Subscription.list(**params)
+    return list(result.data)
+
+
+def _invoice_to_row(inv: Any) -> dict[str, Any]:
+    d = as_dict(inv)
+    created = d.get("created")
+    return {
+        "id": d.get("id"),
+        "amount_paid": d.get("amount_paid"),
+        "currency": d.get("currency"),
+        "status": d.get("status"),
+        "invoice_pdf": d.get("invoice_pdf"),
+        "hosted_invoice_url": d.get("hosted_invoice_url"),
+        "created": stripe_timestamp_to_iso(created) if created is not None else None,
+    }
+
+
+def _invoice_cursor_after_skipping(
+    stripe_customer_id: str, *, to_skip: int, starting_after: Optional[str]
+) -> Optional[str]:
+    if to_skip <= 0:
+        return None
+    cursor: Optional[str] = starting_after
+    remaining = to_skip
+    while remaining > 0:
+        fetch_n = min(100, remaining)
+        result = stripe.Invoice.list(
+            customer=stripe_customer_id,
+            limit=fetch_n,
+            starting_after=cursor,
+        )
+        batch: List[Any] = list(result.data)
+        if not batch:
+            return None
+        if len(batch) < fetch_n:
+            return None
+        cursor = str(batch[-1].id)
+        remaining -= len(batch)
+    return cursor
+
+
+def _list_customer_invoices_page(
+    stripe_customer_id: str,
+    *,
+    page: int,
+    limit: int,
+) -> dict[str, Any]:
+    if page < 1 or limit < 1:
+        return {
+            "invoices": [],
+            "page": max(page, 1),
+            "limit": max(limit, 1),
+            "hasMore": False,
+            "total": 0,
+            "totalPages": 0,
+        }
+    skip = (page - 1) * limit
+    cursor = _invoice_cursor_after_skipping(stripe_customer_id, to_skip=skip, starting_after=None)
+    if skip > 0 and cursor is None:
+        return {
+            "invoices": [],
+            "page": page,
+            "limit": limit,
+            "hasMore": False,
+            "total": 0,
+            "totalPages": 0,
+        }
+    result = stripe.Invoice.list(
+        customer=stripe_customer_id,
+        limit=limit,
+        starting_after=cursor,
+    )
+    rows = [_invoice_to_row(inv) for inv in list(result.data)]
+    has_more = bool(getattr(result, "has_more", False))
+    if has_more:
+        return {
+            "invoices": rows,
+            "page": page,
+            "limit": limit,
+            "hasMore": True,
+            "total": None,
+            "totalPages": None,
+        }
+    total = skip + len(rows)
+    total_pages = (total + limit - 1) // limit if limit else 0
+    return {
+        "invoices": rows,
+        "page": page,
+        "limit": limit,
+        "hasMore": False,
+        "total": total,
+        "totalPages": total_pages,
+    }
+
+
+def _customer_id_from_subscription(sub: Any) -> Optional[str]:
+    d = as_dict(sub)
+    c = d.get("customer")
+    if isinstance(c, dict):
+        return c.get("id")
+    return str(c) if c else None
+
+
+def _subscription_item_and_price(sub: Any) -> tuple[Optional[str], Optional[str]]:
+    d = as_dict(sub)
+    items = d.get("items") or {}
+    data: List[dict] = list(items.get("data") or [])
+    if not data:
+        return None, None
+    first = data[0]
+    return first.get("id"), (first.get("price") or {}).get("id")
+
+
+async def create_stripe_payment_link(
+    *,
+    user_id: str,
+    product_id: str,
+    userflow: str,
+    cancel_url: Optional[str],
+    users: UserModel,
+    subscriptions: SubscriptionsModel,
+    products: Optional[List[ProductConfig]] = None,
+    settings: Optional[StripeSettings] = None,
+) -> PaymentLinkResult:
+    settings = settings or StripeSettings.from_env()
+    products = products or get_products()
+
+    product = next((p for p in products if p.id == product_id or p.price_id == product_id), None)
+    if not product:
+        return PaymentLinkResult(status=400, message="Invalid product ID")
+
+    user = await user_doc_for_stripe(users, user_id)
+    if not user:
+        return PaymentLinkResult(status=404, message="User not found")
+
+    price_id = product.price_id
+    if not price_id:
+        try:
+            price_id = _resolve_price_id_for_product(product.id)
+        except ValueError as e:
+            return PaymentLinkResult(status=400, message=str(e))
+        except stripe.error.StripeError:
+            return PaymentLinkResult(status=500, message="Error fetching product price", payment_link_url=None)
+
+    if userflow == "subscription":
+        existing = await subscriptions.find_active_with_stripe(user_id)
+        sid = (existing or {}).get("stripe_subscription_id") if existing else None
+        if existing and sid:
+            try:
+                stripe_sub = stripe.Subscription.retrieve(sid)
+                status = as_dict(stripe_sub).get("status")
+                if status in ("canceled", "unpaid"):
+                    pass
+                else:
+                    item_id, current_price_id = _subscription_item_and_price(stripe_sub)
+                    if not item_id:
+                        logger.warning(
+                            "No subscription item found for user %s; creating payment link",
+                            user_id,
+                        )
+                    else:
+                        if current_price_id == price_id:
+                            return PaymentLinkResult(
+                                status=200,
+                                message="Already subscribed to this plan",
+                                payment_link_url=settings.success_url_subscription
+                                or settings.success_url,
+                                payment_link_id=None,
+                                subscription_updated=True,
+                            )
+                        updated = stripe.Subscription.modify(
+                            sid,
+                            items=[{"id": item_id, "price": price_id}],
+                            proration_behavior="always_invoice",
+                            metadata={
+                                "userId": str(user_id),
+                                "productId": product.id,
+                                "productName": product.name,
+                                "updated_via": "subscription_change",
+                            },
+                        )
+                        ud = as_dict(updated)
+                        ent = get_subscription_entitlements(product.name)
+                        computed = compute_subscription_fields(
+                            ud,
+                            bool(ud.get("cancel_at_period_end")),
+                            ud.get("cancel_at"),
+                            str(ud.get("status") or ""),
+                        )
+                        stripe_customer_id = _customer_id_from_subscription(updated)
+                        await subscriptions.update_by_user_id(
+                            user_id,
+                            {
+                                "subscription_type": product.name,
+                                "interval": product.interval or "monthly",
+                                "speakerProfiles": ent["speakerProfiles"],
+                                "opportunities": ent["opportunities"],
+                                "productId": product.id,
+                                "subscription_price": str(product.price),
+                                "stripe_customer_id": stripe_customer_id,
+                                "stripe_subscription_id": ud.get("id"),
+                                "stripe_status": ud.get("status"),
+                                "current_period_start": str(ud.get("current_period_start") or "")
+                                if ud.get("current_period_start") is not None
+                                else None,
+                                "current_period_end": str(ud.get("current_period_end") or "")
+                                if ud.get("current_period_end") is not None
+                                else None,
+                                "billing_cycle_anchor": str(ud.get("billing_cycle_anchor") or "")
+                                if ud.get("billing_cycle_anchor") is not None
+                                else None,
+                                "cancel_at_period_end": bool(ud.get("cancel_at_period_end")),
+                                "cancel_at": str(ud["cancel_at"])
+                                if ud.get("cancel_at") is not None
+                                else None,
+                                **computed,
+                                "active": ud.get("status") == "active",
+                                "success": ud.get("status") == "active",
+                            },
+                        )
+                        if stripe_customer_id:
+                            await user_set_stripe_customer_id(users, user_id, stripe_customer_id)
+                        return PaymentLinkResult(
+                            status=200,
+                            message="Subscription updated successfully",
+                            payment_link_url=settings.success_url_subscription
+                            or settings.success_url,
+                            payment_link_id=None,
+                            subscription_updated=True,
+                        )
+            except stripe.error.StripeError as e:
+                logger.warning("Error updating existing subscription: %s", e)
+
+    success_url = (
+        settings.success_url
+        if userflow == "registration"
+        else settings.success_url_subscription or settings.success_url
+    )
+    if not success_url:
+        return PaymentLinkResult(status=500, message="STRIPE_SUCCESS_URL(S) not configured")
+
+    pl = stripe.PaymentLink.create(
+        line_items=[{"price": price_id, "quantity": 1}],
+        metadata={
+            "userId": str(user_id),
+            "productId": product.id,
+            "productName": product.name,
+        },
+        after_completion={"type": "redirect", "redirect": {"url": success_url}},
+    )
+    pld = as_dict(pl)
+    return PaymentLinkResult(
+        status=200,
+        message="Payment link created successfully",
+        payment_link_url=pld.get("url"),
+        payment_link_id=pld.get("id"),
+        subscription_updated=False,
+    )
+
+
+def init_stripe_from_env() -> Optional[StripeSettings]:
+    key = os.environ.get("STRIPE_SECRET_KEY")
+    if not key:
+        logger.warning("STRIPE_SECRET_KEY not set; Stripe routes will fail until configured.")
+        return None
+    settings = StripeSettings.from_env()
+    stripe.api_key = settings.secret_key
+    return settings
+
+
+def _subscriptions_with_ts_overrides(
+    processed: list[dict[str, Any]], ts: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if not processed:
+        return processed
+    return [{**sub, **ts} for sub in processed]
+
+
+def _subscription_at_root(
+    processed: list[dict[str, Any]], ts: dict[str, Any]
+) -> dict[str, Any]:
+    merged = _subscriptions_with_ts_overrides(processed, ts)
+    return dict(merged[0]) if merged else {}
+
+
+class SubscriptionsService:
+    """Stripe-backed subscriptions and billing (API entrypoint)."""
+
+    def __init__(self) -> None:
+        self._users = UserModel()
+        self._subscriptions = SubscriptionsModel()
+
+    async def fetch_user(self, user_id: str) -> Optional[dict[str, Any]]:
+        return await user_doc_for_stripe(self._users, user_id)
+
+    async def handle_webhook(
+        self, payload: bytes, stripe_signature: str | None
+    ) -> Tuple[dict[str, Any], int]:
+        return await handle_raw_webhook(
+            payload, stripe_signature, users=self._users, subscriptions=self._subscriptions
+        )
+
+    async def create_payment_link(
+        self,
+        *,
+        user_id: str,
+        product_id: str,
+        userflow: str,
+        cancel_url: Optional[str],
+    ) -> PaymentLinkResult:
+        return await create_stripe_payment_link(
+            user_id=user_id,
+            product_id=product_id,
+            userflow=userflow,
+            cancel_url=cancel_url,
+            users=self._users,
+            subscriptions=self._subscriptions,
+        )
+
+    def billing_portal(
+        self, *, stripe_customer_id: str, return_url: Optional[str], settings: StripeSettings
+    ) -> dict[str, Any]:
+        url = return_url or settings.success_url
+        session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id, return_url=url
+        )
+        return {"url": session.url, "session_id": session.id}
+
+    def list_invoices(self, *, stripe_customer_id: str, page: int, limit: int) -> dict[str, Any]:
+        return _list_customer_invoices_page(stripe_customer_id, page=page, limit=limit)
+
+    async def current_subscription_payload(
+        self,
+        *,
+        user_id: str,
+        speaker_profiles: Any,
+    ) -> dict[str, Any]:
+        plan_usage = {
+            "speakerProfiles": await speaker_profiles.count_by_user_id(user_id),
+            "opportunities": None,
+        }
+        user = await user_doc_for_stripe(self._users, user_id)
+        if not user:
+            raise LookupError("User not found")
+
+        mongo_subs_raw = await self._subscriptions.find_all_by_user_id(user_id)
+        if not mongo_subs_raw:
+            free_limits = get_subscription_entitlements("Free")
+            return {
+                "planName": "Free",
+                "planLimits": {
+                    "speakerProfiles": free_limits["speakerProfiles"],
+                    "opportunities": free_limits["opportunities"],
+                },
+                "planUsage": plan_usage,
+                "stripeProductId": None,
+            }
+
+        processed_subscriptions = process_mongo_subscriptions_for_api(mongo_subs_raw)
+        mongo_sub = mongo_subs_raw[0]
+        cid = user.get("stripe_customer_id")
+        if not cid:
+            ts = subscription_timestamp_iso_fields(None, mongo_sub)
+            root = _subscription_at_root(processed_subscriptions, ts)
+            free_limits = get_subscription_entitlements("Free")
+            payload: dict[str, Any] = {
+                **root,
+                "planUsage": plan_usage,
+                "planLimits": {
+                    "speakerProfiles": free_limits["speakerProfiles"],
+                    "opportunities": free_limits["opportunities"],
+                },
+                "tier": None,
+                "stripeProductId": None,
+            }
+            if not root:
+                payload.update(ts)
+            return payload
+
+        subs = _list_subscriptions_for_customer(str(cid), status=None, limit=10)
+        primary = select_primary_subscription(subs)
+        prod_id = plan_product_id_from_subscription(primary) if primary else None
+        tier = tier_from_stripe_product_id(prod_id)
+        ts = subscription_timestamp_iso_fields(primary, mongo_sub)
+        root = _subscription_at_root(processed_subscriptions, ts)
+        payload = {
+            **root,
+            "stripeProductId": prod_id,
+            "planName": tier[0] if tier else None,
+            "planLimits": {
+                "speakerProfiles": tier[1] if tier else None,
+                "opportunities": tier[2] if tier else None,
+            },
+            "planUsage": plan_usage,
+        }
+        if not root:
+            payload.update(ts)
+        return payload

@@ -53,6 +53,13 @@ class SpeakerProfileModel:
         """Total documents in the speaker_profiles collection."""
         return await self.collection.count_documents({})
 
+    async def count_by_user_id(self, user_id: Optional[str]) -> int:
+        """Count speaker profiles linked to this user (string or legacy ObjectId user_id)."""
+        uid = (user_id or "").strip()
+        if not uid:
+            return 0
+        return await self.collection.count_documents(_user_id_query_filter(uid))
+
     async def create_profile(
         self,
         full_name: str,
